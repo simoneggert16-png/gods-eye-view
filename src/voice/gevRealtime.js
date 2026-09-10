@@ -2402,7 +2402,7 @@ export async function captureViewportImage() {
   // frame would feed the model old entities as current context. (perf
   // wave 2 fix)
   const fresh = await renderFreshCesiumFrame(viewer);
-  if (!fresh) return null;
+  if (!fresh && typeof document !== 'undefined' && document.hidden) return null;
 
   // Clamp BOTH dimensions by a total-pixel budget so tall portrait windows are
   // downscaled too (the old width-only clamp let them through — M13).
