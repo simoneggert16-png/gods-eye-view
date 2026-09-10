@@ -43,27 +43,41 @@ export function resolveZaiModel(configured) {
   return isValidZaiModel(id) ? id : ZAI_DEFAULT_MODEL;
 }
 
+import { cleanVisionImages } from './gevOllama.js';
+
 /**
- * Build the chat request (key attached server-side).
+ * Build the chat request (key attached server-side). Supports vision screenshots.
  *
  * @param {object} options
  * @param {string} options.message - User message (trimmed + capped here).
  * @param {string} [options.contextText] - Live scene context (capped here).
  * @param {string} [options.model] - Resolved model id (validated here).
  * @param {string} [options.system] - System prompt override (capped here).
+ * @param {Array<string>} [options.images] - Screenshot data URLs (cleaned here).
  * @returns {{ model: string, body: object }}
  */
-export function buildZaiChatRequest({ message, contextText = '', model, system = '' } = {}) {
+export function buildZaiChatRequest({ message, contextText = '', model, system = '', images = null } = {}) {
   const text = String(message || '').trim().slice(0, ZAI_MAX_MESSAGE_CHARS);
   const ctx = String(contextText || '').trim().slice(0, ZAI_MAX_CONTEXT_CHARS);
   const prompt = String(system || '').trim().slice(0, 2000) || ZAI_SYSTEM_PROMPT;
+  const promptText = ctx ? `Live scene context:\n${ctx}\n\nQuestion: ${text}` : text;
+  const cleanedImages = cleanVisionImages(images);
+  const userContent = cleanedImages.length
+    ? [
+        { type: 'text', text: promptText },
+        ...cleanedImages.map((b64) => ({
+          type: 'image_url',
+          image_url: { url: `data:image/jpeg;base64,${b64}` },
+        })),
+      ]
+    : promptText;
   return {
     model: resolveZaiModel(model),
     body: {
       model: resolveZaiModel(model),
       messages: [
         { role: 'system', content: prompt },
-        { role: 'user', content: ctx ? `Live scene context:\n${ctx}\n\nQuestion: ${text}` : text },
+        { role: 'user', content: userContent },
       ],
       temperature: 0.4,
       max_tokens: 400,

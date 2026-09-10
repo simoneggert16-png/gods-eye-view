@@ -25,13 +25,22 @@ test('zai defaults to glm-5.3-flash and gates model ids', () => {
   assert.equal(resolveZaiModel('../evil'), ZAI_DEFAULT_MODEL);
 });
 
-test('zai request is openai-shaped with grounded context', () => {
+test('zai request is openai-shaped with grounded context and optional vision images', () => {
   const { model, body } = buildZaiChatRequest({ message: 'Hi', contextText: 'Austin' });
   assert.equal(model, ZAI_DEFAULT_MODEL);
   assert.equal(body.model, ZAI_DEFAULT_MODEL);
   assert.equal(body.messages[0].role, 'system');
   assert.ok(body.messages[1].content.includes('Austin'));
   assert.equal(body.stream, undefined, 'non-streaming');
+
+  const withImg = buildZaiChatRequest({
+    message: 'What is this?',
+    images: ['data:image/jpeg;base64,AAA=', 'invalid-image']
+  });
+  assert.equal(Array.isArray(withImg.body.messages[1].content), true);
+  assert.equal(withImg.body.messages[1].content[0].type, 'text');
+  assert.equal(withImg.body.messages[1].content[1].type, 'image_url');
+  assert.equal(withImg.body.messages[1].content[1].image_url.url, 'data:image/jpeg;base64,AAA=');
 });
 
 test('zai extractor reads choices, reports errors', () => {

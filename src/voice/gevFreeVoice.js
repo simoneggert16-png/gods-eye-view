@@ -1144,38 +1144,43 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     const message = buildRouterMessage(text, history, scene);
     const system = `${ROUTER_SYSTEM_PROMPT}\n${ROUTER_VISION_ADDENDUM}`;
     if (doFetch) {
-      let response = null;
-      try {
-        const payload = { message, system };
-        if (image) payload.images = [image];
-        response = await doFetch('/api/ollama/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-      } catch {
-        response = null;
-      }
-      if (response && response.status !== 503) {
-        const data = await response?.json?.().catch(() => null);
-        const routed = extractRouterCall(data?.answer);
-        if (routed && routed.name) {
-          logTurn('ollama', routed.say || text);
-          return executeCalls(
-            [{ name: routed.name, args: routed.args }],
-            routed.say || text,
-            lang,
-            { routed: true },
-          );
+      for (const brain of [
+        { endpoint: '/api/ollama/chat', who: 'ollama' },
+        { endpoint: '/api/zai/chat', who: 'zai' },
+      ]) {
+        let response = null;
+        try {
+          const payload = { message, system };
+          if (image) payload.images = [image];
+          response = await doFetch(brain.endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+        } catch {
+          response = null;
         }
-        // Visible questions get a plain-text answer straight from the model.
-        const direct = !routed && typeof data?.answer === 'string' ? data.answer.trim() : '';
-        if (response.ok && direct) {
-          state.lastResult = { ok: true, speech: direct, answer: direct };
-          setDetail(direct);
-          speak(direct, lang);
-          logTurn('ollama', direct);
-          return state.lastResult;
+        if (response && response.status !== 503) {
+          const data = await response?.json?.().catch(() => null);
+          const routed = extractRouterCall(data?.answer);
+          if (routed && routed.name) {
+            logTurn(brain.who, routed.say || text);
+            return executeCalls(
+              [{ name: routed.name, args: routed.args }],
+              routed.say || text,
+              lang,
+              { routed: true },
+            );
+          }
+          // Visible questions get a plain-text answer straight from the model.
+          const direct = !routed && typeof data?.answer === 'string' ? data.answer.trim() : '';
+          if (response.ok && direct) {
+            state.lastResult = { ok: true, speech: direct, answer: direct };
+            setDetail(direct);
+            speak(direct, lang);
+            logTurn(brain.who, direct);
+            return state.lastResult;
+          }
         }
       }
     }

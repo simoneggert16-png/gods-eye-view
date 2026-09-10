@@ -5799,11 +5799,13 @@ export function chatBrainsProxy() {
       let message = '';
       let contextText = '';
       let system = '';
+      let images = null;
       try {
-        const parsed = JSON.parse(await readRequestBody(req, 16 * 1024) || '{}');
+        const parsed = JSON.parse(await readRequestBody(req, 640 * 1024) || '{}');
         message = String(parsed?.message || '').trim();
         contextText = String(parsed?.context || '').trim();
         system = String(parsed?.system || '').trim().slice(0, 2000);
+        if (Array.isArray(parsed?.images)) images = parsed.images.slice(0, 2).map(String).map((s) => s.slice(0, 400000));
       } catch {
         json(400, { error: 'Malformed JSON body', answer: null });
         return;
@@ -5812,7 +5814,7 @@ export function chatBrainsProxy() {
         json(400, { error: 'Missing message', answer: null });
         return;
       }
-      const { model, body } = buildZaiChatRequest({ message, contextText, model: process.env.ZAI_MODEL, system });
+      const { model, body } = buildZaiChatRequest({ message, contextText, model: process.env.ZAI_MODEL, system, images });
       let result;
       try {
         result = await postChatUpstream('https://api.z.ai/api/paas/v4/chat/completions', apiKey, body, ZAI_MAX_RESPONSE_BYTES);
