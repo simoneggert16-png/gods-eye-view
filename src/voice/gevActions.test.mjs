@@ -15,6 +15,7 @@ import {
   formatTrackedEntityLabel,
   knownRadioLocation,
   normalizeStackId,
+  parseLatLonQuery,
 } from './gevActions.js';
 import { MAP_STACKS } from '../mapStackController.js';
 import { readFileSync } from 'node:fs';
@@ -396,7 +397,9 @@ test('nearest-aircraft voice action rejects a missing destination without changi
     },
     getAll: () => [{ id: 'flights', name: 'Live Flights', enabled }],
   };
-  const runner = createGevActionRunner({ viewer, styleManager, dataManager });
+  // No camera position either: nothing to fall back to, so it still refuses.
+  const blindViewer = { ...viewer, camera: { ...viewer.camera, positionCartographic: null } };
+  const runner = createGevActionRunner({ viewer: blindViewer, styleManager, dataManager });
   const result = await runner('select_nearest_aircraft', { layerId: 'flights' });
   assert.equal(result.ok, false);
   assert.equal(result.stage, 'location');
@@ -700,6 +703,51 @@ test('a newer voice action makes an older deferred navigation authority inert', 
     release: () => { staleReleased = true; },
   }), false);
   assert.equal(staleReleased, false);
+});
+
+test('fire tracking self-enables the FIRMS layer instead of refusing', async () => {
+  globalThis.window = globalThis.window || { clearTimeout, setTimeout, requestIdleCallback: null };
+  const { viewer, styleManager } = createVoiceNavigationHarness();
+  const enabled = new Map([['local-firms', false]]);
+  const enableCalls = [];
+  const runner = createGevActionRunner({
+    viewer,
+    styleManager,
+    dataManager: {
+      layers: new Map([['local-firms', { module: {
+        getStrongestFire: () => ({ latitude: 34.05, longitude: -118.25, frp: 1200, label: 'LA fire' }),
+      } }]]),
+      isEnabled: (id) => enabled.get(id) === true,
+      getAll: () => [],
+      _setEnabledWithIntent: (id, value, options) => {
+        enableCalls.push([id, value, options?.origin]);
+        enabled.set(id, value);
+        return { promise: Promise.resolve(true), intentEpoch: 7 };
+      },
+      _waitForVisibilityIntent: async () => ({ succeeded: true }),
+    },
+  });
+  const result = await runner('track_entity', { query: 'fire' });
+  assert.equal(result.ok, true);
+  assert.deepEqual(enableCalls, [['local-firms', true, 'voice']]);
+  assert.equal(result.kind, 'fire');
+});
+
+test('fire tracking still reports honestly when the layer will not enable', async () => {
+  globalThis.window = globalThis.window || { clearTimeout, setTimeout, requestIdleCallback: null };
+  const { viewer, styleManager } = createVoiceNavigationHarness();
+  const runner = createGevActionRunner({
+    viewer,
+    styleManager,
+    dataManager: {
+      layers: new Map([['local-firms', { module: { getStrongestFire: () => null } }]]),
+      isEnabled: () => false,
+      getAll: () => [],
+      setEnabled: async () => { throw new Error('nope'); },
+    },
+  });
+  const result = await runner('track_entity', { query: 'show me a fire' });
+  assert.equal(result.ok, false);
 });
 
 test('Data Layers voice inventory hides the Context coordinator while current-view truth retains it', async () => {
@@ -3019,4 +3067,212 @@ test('front5: 0.99 km due EAST is the subject, though a degree box rejects it', 
     assert.equal(result.count, 116, 'and gets the window number the panel shows');
     assert.equal(result.window.centeredOn, 'N546PC');
   });
+});
+
+/** Minimal camera stub: zoomIn dives past the surface, like the field repro. */
+function stubZoomViewer({ heightM = 600, tracked = null } = {}) {
+  const calls = [];
+  const lon = Cesium.Math.toRadians(-97.7431);
+  const lat = Cesium.Math.toRadians(30.2672);
+  const cartographic = new Cesium.Cartographic(lon, lat, heightM);
+  const camera = {
+    positionWC: Cesium.Cartesian3.fromRadians(lon, lat, heightM),
+    positionCartographic: cartographic,
+    heading: 0.5,
+    pitch: -0.6,
+    roll: 0,
+    moveEnd: { addEventListener() {} },
+    cancelFlight() { calls.push('cancelFlight'); },
+    flyTo(destination, options) {
+      calls.push('flyTo');
+      queueMicrotask(() => options?.onComplete?.());
+    },
+    flyToBoundingSphere(sphere, options) {
+      calls.push('flyToBoundingSphere');
+      queueMicrotask(() => options?.onComplete?.());
+    },    zoomIn(m) {
+      calls.push(['zoomIn', m]);
+      cartographic.height = -100;
+      camera.positionWC = Cesium.Cartesian3.fromRadians(cartographic.longitude, cartographic.latitude, -100);
+    },
+    zoomOut(m) {
+      calls.push(['zoomOut', m]);
+      cartographic.height += m;
+      camera.positionWC = Cesium.Cartesian3.fromRadians(cartographic.longitude, cartographic.latitude, cartographic.height);
+    },
+    setView({ destination, orientation }) {
+      calls.push(['setView', orientation]);
+      camera.positionWC = Cesium.Cartesian3.clone(destination);
+      const c = Cesium.Cartographic.fromCartesian(destination);
+      cartographic.longitude = c.longitude;
+      cartographic.latitude = c.latitude;
+      cartographic.height = c.height;
+    },
+  };
+  return {
+    calls,
+    cartographic,
+    viewer: {
+      camera,
+      trackedEntity: tracked,
+      clock: { onTick: { addEventListener() {} } },
+      scene: {
+        canvas: { clientWidth: 0, clientHeight: 0, addEventListener() {}, removeEventListener() {} },
+        requestRender() { calls.push('render'); },
+      },
+    },
+  };
+}
+
+function zoomRunner(viewer) {
+  return createGevActionRunner({
+    viewer,
+    styleManager: {},
+    dataManager: { layers: new Map(), isEnabled: () => false, getAll: () => [] },
+  });
+}
+
+test('voice zoom never dives below the ground floor', async () => {
+  // Field repro: 600 m over Austin zoomed to −6,922 m (black screen).
+  const { viewer, calls, cartographic } = stubZoomViewer({ heightM: 600 });
+  const result = await zoomRunner(viewer)('adjust_camera_zoom', { direction: 'in', amount: 'medium' });
+  assert.equal(result.ok, true);
+  assert.ok(calls.some((c) => c[0] === 'setView'), 'clamp repositions the camera');
+  assert.equal(Math.round(cartographic.height), 25);
+  assert.equal(Math.round(result.afterHeightM), 25);
+});
+
+test('voice zoom while tracked re-adopts the follow instead of vanishing', async () => {
+  const entity = { id: 'tracked-1' };
+  const { viewer, calls } = stubZoomViewer({ heightM: 500000, tracked: entity });
+  const result = await zoomRunner(viewer)('adjust_camera_zoom', { direction: 'in', amount: 'medium' });
+  assert.equal(result.ok, true);
+  // Tracking continues — but on the NEW offset, so the zoom sticks.
+  assert.equal(viewer.trackedEntity, entity);
+  assert.ok(result.afterHeightM < result.beforeHeightM, 'moved closer');
+});
+
+test('untracked voice zoom leaves tracking alone', async () => {
+  const { viewer } = stubZoomViewer({ heightM: 500000, tracked: null });
+  const result = await zoomRunner(viewer)('adjust_camera_zoom', { direction: 'out', amount: 'little' });
+  assert.equal(result.ok, true);
+  assert.equal(viewer.trackedEntity, null);
+});
+
+test('fly_to_location miss names the place instead of an empty error', async () => {
+  const hadWindow = Object.hasOwn(globalThis, 'window');
+  const priorWindow = globalThis.window;
+  const priorFetch = globalThis.fetch;
+  if (hadWindow) delete globalThis.window;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ found: false }) });
+  try {
+    const { viewer, styleManager } = createVoiceNavigationHarness();
+    const runner = createGevActionRunner({
+      viewer,
+      styleManager,
+      dataManager: { layers: new Map(), isEnabled: () => false, getAll: () => [] },
+    });
+    const result = await runner('fly_to_location', { query: 'xyznonexistentplace' });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /xyznonexistentplace/);
+    assert.match(result.error, /not found/);
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (hadWindow) globalThis.window = priorWindow;
+  }
+});
+
+test('packed lat,lon queries parse for direct flights', () => {
+  assert.deepEqual(parseLatLonQuery('22.5431,114.0579'), { latitude: 22.5431, longitude: 114.0579 });
+  assert.deepEqual(parseLatLonQuery('  -33.86 , 151.20  '), { latitude: -33.86, longitude: 151.2 });
+  assert.equal(parseLatLonQuery('Shenzhen'), null);
+  assert.equal(parseLatLonQuery('22.5'), null);
+  assert.equal(parseLatLonQuery('95,0'), null, 'latitude out of range');
+  assert.equal(parseLatLonQuery('0,200'), null, 'longitude out of range');
+  assert.equal(parseLatLonQuery(null), null);
+});
+
+test('nearest-aircraft without a place falls back to the camera, not refusal', async () => {
+  globalThis.window = globalThis.window || { clearTimeout, setTimeout, requestIdleCallback: null };
+  const flown = [];
+  const lon = Cesium.Math.toRadians(-97.7431);
+  const lat = Cesium.Math.toRadians(30.2672);
+  const camera = {
+    positionWC: Cesium.Cartesian3.fromRadians(lon, lat, 50000),
+    positionCartographic: new Cesium.Cartographic(lon, lat, 50000),
+    heading: 0, pitch: -1, roll: 0,
+    moveEnd: { addEventListener() {} },
+    cancelFlight() {},
+    lookAt() {},
+    lookAtTransform() {},
+    flyTo(destination, options) {
+      flown.push(destination);
+      queueMicrotask(() => { options?.onComplete?.(); options?.complete?.(); });
+    },
+    flyToBoundingSphere(sphere, options) {
+      flown.push(sphere);
+      queueMicrotask(() => { options?.onComplete?.(); options?.complete?.(); });
+    },
+  };
+  const viewer = {
+    camera,
+    trackedEntity: null,
+    clock: { onTick: { addEventListener() {} } },
+    scene: { canvas: { clientWidth: 0, clientHeight: 0, addEventListener() {}, removeEventListener() {} }, requestRender() {} },
+  };
+  const runner = createGevActionRunner({
+    viewer,
+    styleManager: {},
+    dataManager: {
+      layers: new Map([['flights', { module: { update: async () => true, getStats: () => ({}) } }]]),
+      isEnabled: () => true,
+      getAll: () => [],
+      setEnabled: async () => true,
+    },
+  });
+  const result = await runner('select_nearest_aircraft', { layerId: 'flights' });
+  assert.notEqual(result.stage, 'location', 'camera position satisfies the location requirement');
+  assert.ok(flown.length > 0, 'flew to the camera position to scan');
+
+  const blind = createGevActionRunner({
+    viewer: { ...viewer, camera: { ...camera, positionCartographic: null } },
+    styleManager: {},
+    dataManager: { layers: new Map(), isEnabled: () => false, getAll: () => [] },
+  });
+  const refused = await blind('select_nearest_aircraft', { layerId: 'flights' });
+  assert.equal(refused.stage, 'location');
+  assert.match(refused.error, /preset, place name/);
+});
+
+test('web_search returns sourced facts and honest failures', async () => {
+  globalThis.window = globalThis.window || { clearTimeout, setTimeout, requestIdleCallback: null };
+  const { viewer, styleManager } = createVoiceNavigationHarness();
+  const priorFetch = globalThis.fetch;
+  const wikiPayload = {
+    results: [{ title: 'Tokyo', snippet: 'Tokyo is the capital of Japan.', url: 'https://en.wikipedia.org/wiki/Tokyo', source: 'Wikipedia' }],
+  };
+  try {
+    globalThis.fetch = async (url) => {
+      assert.ok(String(url).startsWith('/api/web-search?q='), 'same-origin proxy only');
+      return { ok: true, json: async () => wikiPayload };
+    };
+    const runner = createGevActionRunner({
+      viewer,
+      styleManager,
+      dataManager: { layers: new Map(), isEnabled: () => false, getAll: () => [] },
+    });
+    const result = await runner('web_search', { query: 'largest city' });
+    assert.equal(result.ok, true);
+    assert.equal(result.results[0].title, 'Tokyo');
+
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ results: [] }) });
+    const empty = await runner('web_search', { query: 'xyznothinghere' });
+    assert.equal(empty.ok, false);
+    assert.match(empty.error, /No web results/);
+
+    const missing = await runner('web_search', { query: '   ' });
+    assert.equal(missing.ok, false);
+  } finally {
+    globalThis.fetch = priorFetch;
+  }
 });

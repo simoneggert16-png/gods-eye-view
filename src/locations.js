@@ -342,32 +342,144 @@ export function findPoiByName(query) {
 export const CANCELLED_SEARCH = Object.freeze({ cancelled: true });
 
 /**
+ * Possessive/genitive query variants, tried in order on a miss: "epstein's
+ * island" and "epsteins island" both mean the Epstein island. Only safer
+ * rewrites (never the original) — a bad variant simply misses again and the
+ * lookup returns null as before. Pure; unit-tested.
+ */
+export function placeQueryVariants(query) {
+  const original = String(query || '').trim().slice(0, 160);
+  const variants = [original];
+  if (!original) return variants;
+  const desaxon = original.replace(/(\w)'s\b/gi, '$1').trim();
+  if (desaxon && desaxon.toLowerCase() !== original.toLowerCase()) variants.push(desaxon);
+  const degs = original
+    .split(/\s+/)
+    .map((word) => (/^[A-Za-z]{4,}s$/.test(word) && !/^(texas|paris|athens|naples|brussels|lyon|essen|wales)$/i.test(word) ? word.slice(0, -1) : word))
+    .join(' ')
+    .trim();
+  if (degs && degs.toLowerCase() !== original.toLowerCase() && !variants.some((v) => v.toLowerCase() === degs.toLowerCase())) {
+    variants.push(degs);
+  }
+  return variants.filter(Boolean).slice(0, 3);
+}
+
+/**
+ * Map a keyless /api/geocode (Nominatim) hit onto the Google-geocode shape
+ * searchAndFlyTo frames downstream ({ lat, lng, label, types, viewport }).
+ * The `types` mimic Google's vocabulary just far enough for
+ * geocodeNavigationMode to pick city/neighborhood/street/area framing.
+ * Pure — unit-tested, no network.
+ *
+ * @param {object} row - Proxy payload ({ lat, lon, label, bbox, placeClass, placeType, addressType }).
+ * @returns {{lat:number,lng:number,label:string,types:string[],viewport:object|null}|null}
+ */
+export function nominatimResultToGeocode(row) {
+  const lat = Number(row?.lat);
+  const lng = Number(row?.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  const label = String(row?.label || '').trim().slice(0, 200) || 'Unknown place';
+  const kind = String(row?.addressType || row?.placeType || '').toLowerCase();
+  const cls = String(row?.placeClass || '').toLowerCase();
+  let types;
+  if (kind === 'country') types = ['country', 'political'];
+  else if (['state', 'county', 'administrative'].includes(kind) || cls === 'boundary') types = ['administrative_area_level_1', 'political'];
+  else if (['city', 'town', 'village', 'municipality', 'borough'].includes(kind)) types = ['locality', 'political'];
+  else if (['suburb', 'neighbourhood', 'neighborhood', 'hamlet', 'quarter'].includes(kind)) types = ['neighborhood'];
+  else if (kind === 'road' || cls === 'highway') types = ['route'];
+  else if (cls === 'natural') types = ['natural_feature'];
+  else if (kind === 'park' || cls === 'leisure') types = ['park'];
+  else if (cls === 'aeroway') types = ['airport'];
+  else if (kind === 'stadium') types = ['stadium'];
+  else if (kind === 'university' || kind === 'college') types = ['university'];
+  else types = [];
+  let viewport = null;
+  const bbox = Array.isArray(row?.bbox) ? row.bbox.map(Number) : [];
+  // Nominatim order: [south, north, west, east].
+  if (bbox.length === 4 && bbox.every(Number.isFinite)) {
+    viewport = {
+      southwest: { lat: bbox[0], lng: bbox[2] },
+      northeast: { lat: bbox[1], lng: bbox[3] },
+    };
+  }
+  return { lat, lng, label, types, viewport };
+}
+
+/**
+ * Keyless forward geocode through the dev server's /api/geocode proxy
+ * (OpenStreetMap Nominatim — free, no key). Returns the framed geocode shape
+ * or null when nothing was found. Pure mapping via nominatimResultToGeocode.
+ */
+async function keylessNominatimGeocode(query) {
+  const q = String(query || '').trim().slice(0, 160);
+  if (!q) return null;
+  try {
+    const response = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`);
+    if (!response.ok) return null;
+    const data = await response.json().catch(() => null);
+    if (!data?.found) return null;
+    return nominatimResultToGeocode(data);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Geocode a place name using Google Geocoding API, then fly there at a scale
  * appropriate to the request. Countries and cities use their viewport by
  * default; precise landmarks/buildings use close landmark framing.
  */
 export async function searchAndFlyTo(viewer, query, options = {}) {
-  const apiKey = window.__GOOGLE_MAPS_API_KEY__ || import.meta.env.GOOGLE_MAPS_API_KEY;
-  if (!apiKey) throw new Error('No Google Maps API key available for geocoding');
+  const apiKey = (typeof window !== 'undefined' && window.__GOOGLE_MAPS_API_KEY__) || import.meta.env?.GOOGLE_MAPS_API_KEY;
 
   const beforeFly = typeof options.beforeFly === 'function' ? options.beforeFly : null;
   const mayFly = () => beforeFly === null || beforeFly() !== false;
 
-  // Viewport-biased geocode — the same bias annotationResolver's geocodePlace uses:
-  // "Sixth Street" spoken over Austin must prefer the Sixth Street on screen, not a
-  // same-named road in another city (or the wrong end of town — the W 6th vs E 6th bug).
-  let url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${apiKey}`;
-  const bias = viewportBias(viewer);
-  if (bias) url += `&bounds=${bias}`;
-  const response = await fetch(url);
-  const data = await response.json();
+  let result = null;
+  let lat;
+  let lng;
+  let label;
+  let types = [];
+  let viewport = null;
+  let haveFix = false;
 
-  const result = (data.status === 'OK' && data.results?.length) ? data.results[0] : null;
-  let lat = result?.geometry.location.lat;
-  let lng = result?.geometry.location.lng;
-  let label = result ? result.formatted_address : null;
-  let types = result?.types || [];
-  let viewport = result ? (result.geometry.bounds || result.geometry.viewport) : null;
+  if (apiKey) {
+    // Viewport-biased geocode — the same bias annotationResolver's geocodePlace uses:
+    // "Sixth Street" spoken over Austin must prefer the Sixth Street on screen, not a
+    // same-named road in another city (or the wrong end of town — the W 6th vs E 6th bug).
+    // Possessive variants ("epstein's island", "epsteins island") retry in order.
+    for (const variant of placeQueryVariants(query)) {
+      let url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(variant)}&key=${apiKey}`;
+      const bias = viewportBias(viewer);
+      if (bias) url += `&bounds=${bias}`;
+      const response = await fetch(url);
+      const data = await response.json();
+
+      result = (data.status === 'OK' && data.results?.length) ? data.results[0] : null;
+      if (!result) continue;
+      lat = result?.geometry.location.lat;
+      lng = result?.geometry.location.lng;
+      label = result ? result.formatted_address : null;
+      types = result?.types || [];
+      viewport = result ? (result.geometry.bounds || result.geometry.viewport) : null;
+      haveFix = Boolean(result);
+      break;
+    }
+  } else {
+    // Keyless route: OpenStreetMap Nominatim through the dev-server proxy —
+    // free, no key. Without it every free-form place fails with a geocoding
+    // error while only presets and the "take me" list work.
+    // Possessive variants retry in order ("epsteins insel" → "epstein insel").
+    for (const variant of placeQueryVariants(query)) {
+      const keyless = await keylessNominatimGeocode(variant);
+      if (!keyless) continue;
+      ({ lat, lng, label, types, viewport } = keyless);
+      haveFix = true;
+      break;
+    }
+    if (!haveFix) return null;
+  }
 
   // Places-near-view recovery (annotationResolver's twin): a missed geocode, or one
   // that landed implausibly far from the view centre, snaps back to a view-biased
@@ -379,7 +491,7 @@ export async function searchAndFlyTo(viewer, query, options = {}) {
     label = recovered.label || label || query;
     types = recovered.types || [];
     viewport = placesViewportToBounds(recovered.viewport) || viewport;
-  } else if (!result) {
+  } else if (!haveFix) {
     return null;
   }
 
@@ -470,6 +582,8 @@ export async function searchAndFlyTo(viewer, query, options = {}) {
   });
   return {
     label,
+    latitude: buildingBounds?.lat ?? lat,
+    longitude: buildingBounds?.lon ?? lng,
     navigationMode: requestedRange
       ? 'explicit-range'
       : (options.forceClose ? navigationMode.replace('-overview', '-close') : navigationMode),
@@ -862,7 +976,7 @@ async function resolveBuildingBounds(lat, lon, query) {
     out tags center geom;
   `;
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 6000);
+  const timeout = setTimeout(() => controller.abort(), 6000);
   try {
     const response = await fetch('/api/overpass', {
       method: 'POST',
@@ -876,7 +990,7 @@ async function resolveBuildingBounds(lat, lon, query) {
   } catch {
     return null;
   } finally {
-    window.clearTimeout(timeout);
+    clearTimeout(timeout);
   }
 }
 

@@ -1,0 +1,22 @@
+﻿services:
+  - type: web
+    name: gods-eye-view
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npx vite --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: NODE_VERSION
+        value: 20.18.0
+      - key: HOST
+        value: 0.0.0.0
+      - key: GEV_ACCESS_PIN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OLLAMA_API_KEY
+        sync: false
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
+      - key: CESIUM_ION_TOKEN
+        sync: false

@@ -7,12 +7,15 @@ import { DataLayerManager } from '../data/manager.js';
 import { controlRadio, createGevActionRunner } from './gevActions.js';
 import {
   computeDownscale,
-  renderFreshCesiumFrame,
   estimateDataUrlBytes,
+  isUniformBlankFrame,
+  renderFreshCesiumFrame,
   GevRealtimeController,
   gateVoiceVisualizerLevel,
   isBenignViewportDeleteError,
   isPushToTalkKey,
+  probeGeminiVoiceKey,
+  probeOpenAiVoiceKey,
   resolveVoiceControlHint,
   resolveVoiceVisualizerSpeaker,
   selectVoiceVisualizerSignal,
@@ -22,6 +25,7 @@ import {
   shouldHandlePushToTalkKeyDown,
   shouldIgnoreVoiceButtonClick,
   shouldStopVoiceAfterRadioTool,
+  startBestVoice,
   readStoredVoiceTier,
   readStoredVoiceLimits,
   writeStoredVoiceTier,
@@ -3245,4 +3249,204 @@ test('a genuinely different refused call still gets its own output', async () =>
   await controller.handleRealtimeEvent(lateToolEvent('resp_old', 'call_one'));
   await controller.handleRealtimeEvent(lateToolItemEvent('resp_old', 'call_two', 'item_two'));
   assert.deepEqual(outputs, ['call_one', 'call_two'], 'each distinct call is answered');
+});
+
+test('voice route probe reads the OpenAI registry flag, unknown stays null', async () => {
+  const realFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ keys: [{ id: 'openai', set: false }] }) });
+    assert.equal(await probeOpenAiVoiceKey(), false);
+
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ keys: [{ id: 'openai', set: true }] }) });
+    assert.equal(await probeOpenAiVoiceKey(), true);
+
+    globalThis.fetch = async () => { throw new Error('offline'); };
+    assert.equal(await probeOpenAiVoiceKey(), null);
+
+    globalThis.fetch = async () => ({ ok: false, status: 403, json: async () => ({}) });
+    assert.equal(await probeOpenAiVoiceKey(), null);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('mic routing prefers free voice without an OpenAI key, Realtime with one', async () => {  const realFetch = globalThis.fetch;
+  const keyed = (set) => {
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ keys: [{ id: 'openai', set }] }) });
+  };
+  const harness = () => {
+    const calls = [];
+    return {
+      calls,
+      controller: {
+        freeVoicePreferred: false,
+        start: (opts) => calls.push(['realtime', opts]),
+      },
+      freeVoice: {
+        started: 0,
+        stopped: 0,
+        isActive: () => false,
+        start: () => { calls.push(['free']); },
+        stop: () => {},
+      },
+    };
+  };
+  try {
+    keyed(false);
+    const keyless = harness();
+    await startBestVoice(keyless.controller, keyless.freeVoice);
+    assert.deepEqual(keyless.calls, [['free']]);
+    assert.equal(keyless.controller.freeVoicePreferred, true);
+
+    keyed(true);
+    const keyedHarness = harness();
+    await startBestVoice(keyedHarness.controller, keyedHarness.freeVoice);
+    assert.deepEqual(keyedHarness.calls, [['realtime', { pushToTalk: false }]]);
+    assert.equal(keyedHarness.controller.freeVoicePreferred, false);
+
+    globalThis.fetch = async () => { throw new Error('offline'); };
+    const unknown = harness();
+    await startBestVoice(unknown.controller, unknown.freeVoice);
+    assert.deepEqual(unknown.calls, [['realtime', { pushToTalk: false }]], 'unknown keeps legacy behavior');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('Space drives free voice when preferred, Realtime otherwise', () => {
+  const handlers = {};
+  const realDocument = globalThis.document;
+  const realWindow = globalThis.window;
+  globalThis.document = {
+    addEventListener: (type, fn) => { handlers[type] = fn; },
+    removeEventListener: () => {},
+    visibilityState: 'visible',
+  };
+  globalThis.window = { addEventListener: () => {}, removeEventListener: () => {} };
+  const ui = { root: { dataset: {} } };
+  try {
+    const freeCalls = [];
+    const controller = new GevRealtimeController({ ui, runner: async () => ({}), radioLayer: null });
+    controller.freeVoice = {
+      isActive: () => freeCalls.includes('start') && !freeCalls.includes('stop'),
+      start: () => freeCalls.push('start'),
+      stop: () => freeCalls.push('stop'),
+    };
+    controller.start = () => freeCalls.push('realtime');
+    controller.bindPushToTalkShortcut();
+    const spaceDown = { code: 'Space', key: ' ', repeat: false, preventDefault: () => {}, target: { isContentEditable: false, closest: () => null } };
+    const spaceUp = { code: 'Space', key: ' ', preventDefault: () => {} };
+
+    // Legacy default: Realtime.
+    handlers.keydown(spaceDown);
+    assert.deepEqual(freeCalls, ['realtime']);
+    handlers.keyup(spaceUp);
+
+    // Keyless route: Space starts free voice, release stops only that session.
+    controller.freeVoicePreferred = true;
+    handlers.keydown({ ...spaceDown, repeat: false });
+    assert.ok(freeCalls.includes('start'), 'space starts free voice when preferred');
+    handlers.keyup(spaceUp);
+    assert.ok(freeCalls.includes('stop'), 'space release stops the space-started free session');
+  } finally {
+    globalThis.document = realDocument;
+    globalThis.window = realWindow;
+  }
+});
+
+test('gemini probe reads the registry flag like the openai one', async () => {
+  const realFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ keys: [{ id: 'gemini', set: true }] }) });
+    assert.equal(await probeGeminiVoiceKey(), true);
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ keys: [] }) });
+    assert.equal(await probeGeminiVoiceKey(), null);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('mic routing prefers Live when only a Gemini key exists', async () => {
+  const realFetch = globalThis.fetch;
+  const routeHarness = () => {
+    const calls = [];
+    return {
+      calls,
+      controller: {
+        freeVoicePreferred: false,
+        liveVoicePreferred: false,
+        start: (opts) => calls.push(['realtime', opts]),
+      },
+      freeVoice: {
+        isActive: () => false,
+        start: () => calls.push(['free']),
+        stop: () => {},
+      },
+      liveVoice: {
+        isActive: () => false,
+        start: async () => { calls.push(['live']); return { ok: true }; },
+        stop: () => {},
+      },
+    };
+  };
+  try {
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => ({ keys: [{ id: 'openai', set: false }, { id: 'gemini', set: true }] }),
+    });
+    const live = routeHarness();
+    await startBestVoice(live.controller, live.freeVoice, live.liveVoice);
+    assert.deepEqual(live.calls, [['live']]);
+    assert.equal(live.controller.liveVoicePreferred, true);
+
+    // Live failure falls back to local voice instead of stranding the user.
+    const failing = routeHarness();
+    failing.liveVoice.start = async () => ({ ok: false, error: 'mic denied' });
+    await startBestVoice(failing.controller, failing.freeVoice, failing.liveVoice);
+    assert.deepEqual(failing.calls, [['free']]);
+
+    // An OpenAI key still wins over everything.
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => ({ keys: [{ id: 'openai', set: true }, { id: 'gemini', set: true }] }),
+    });
+    const keyed = routeHarness();
+    await startBestVoice(keyed.controller, keyed.freeVoice, keyed.liveVoice);
+    assert.deepEqual(keyed.calls, [['realtime', { pushToTalk: false }]]);
+    assert.equal(keyed.controller.liveVoicePreferred, false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('uniform blank frames are refused, textured frames pass', () => {
+  const realDocument = globalThis.document;
+  const withPixels = (pixels, run) => {
+    const sampleCtx = {
+      drawImage() {},
+      getImageData: () => ({ data: pixels }),
+    };
+    globalThis.document = { createElement: () => ({ getContext: () => sampleCtx }) };
+    try {
+      return run();
+    } finally {
+      globalThis.document = realDocument;
+    }
+  };
+  const solid = (r, g, b, n = 48 * 32) => {
+    const pixels = new Uint8ClampedArray(n * 4);
+    for (let i = 0; i < n; i += 1) {
+      pixels[i * 4] = r; pixels[i * 4 + 1] = g; pixels[i * 4 + 2] = b; pixels[i * 4 + 3] = 255;
+    }
+    return pixels;
+  };
+  const ctx = { canvas: {} };
+  assert.equal(withPixels(solid(255, 255, 255), () => isUniformBlankFrame(ctx, 800, 600)), true);
+  assert.equal(withPixels(solid(0, 0, 0), () => isUniformBlankFrame(ctx, 800, 600)), true);
+  assert.equal(withPixels(solid(128, 128, 128), () => isUniformBlankFrame(ctx, 800, 600)), true);
+  const checker = solid(0, 0, 0);
+  for (let i = 0; i < checker.length / 4; i += 2) {
+    checker[i * 4] = 255; checker[i * 4 + 1] = 255; checker[i * 4 + 2] = 255;
+  }
+  assert.equal(withPixels(checker, () => isUniformBlankFrame(ctx, 800, 600)), false);
 });

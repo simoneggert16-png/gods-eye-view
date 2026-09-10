@@ -1,5 +1,7 @@
 import { createGevActionRunner, readLayerLifecycleSummary } from './gevActions.js';
-import {
+import { createFreeVoiceController } from './gevFreeVoice.js';
+import { attachConversationLog, createConversationLog, isVoiceHelpRetired, mirrorToServer } from './gevConversationLog.js';
+import { createGeminiLiveController, createLiveAudioOutput } from './gevGeminiLive.js';import {
   DEFAULT_VOICE_TIER,
   VOICE_COST_LIMITS,
   createVoiceCostTracker,
@@ -197,10 +199,53 @@ export function initGevVoiceCommands({ viewer, styleManager, dataManager, sceneD
   if (window.__gevVoiceCommands && typeof window.__gevVoiceCommands.stop === 'function') {
     window.__gevVoiceCommands.stop({ removeUi: true });
   }
+  try { window.__gevFreeVoice?.stop?.(); } catch { /* re-init releases any prior free session */ }
+  try { window.__gevLiveVoice?.stop?.(); } catch { /* re-init releases any prior live session */ }
   const runner = createGevActionRunner({ viewer, styleManager, dataManager, sceneDirector, annotations });
   const ui = createVoiceControl({ reset: true });
   const radioLayer = dataManager?.layers?.get('radio')?.module || null;
   const controller = new GevRealtimeController({ runner, ui, radioLayer, dataManager });
+  // Free voice (no key): same runner, browser speech recognition + a local
+  // command parser. Routed here when neither an OpenAI nor a Gemini key is
+  // configured; the Realtime path above stays untouched and preferred.
+  // One shared chat history for both keyless voices: every heard turn, every
+  // executed tool (ok/fail), every spoken answer lands here.
+  const conversationLog = createConversationLog();
+  const freeVoice = createFreeVoiceController({ runner, ui, log: conversationLog, captureViewport: captureViewportImage });
+  // Gemini Live (realtime dialog, needs a Gemini key): same runner for map
+  // commands, native audio both ways. Routed below when no OpenAI key exists.
+  const liveVoice = createGeminiLiveController({ runner, ui, audioEnv: createLiveAudioOutput(), log: conversationLog, captureViewport: captureViewportImage });
+  attachFreeVoiceTextInput(ui, freeVoice, liveVoice);
+  // Attached AFTER the chat form so the LOG toggle can move into the form row.
+  attachConversationLog(ui, conversationLog);
+  // Retire the "hold space" hover tooltip once the operator demonstrably
+  // knows voice control — otherwise it parks over the chat box forever.
+  const retireHelp = () => {
+    try {
+      if (isVoiceHelpRetired(conversationLog) && ui?.root) ui.root.dataset.helpRetired = 'true';
+    } catch { /* hint visibility never breaks voice */ }
+  };
+  retireHelp();
+  conversationLog.subscribe(() => retireHelp());
+  // Server mirror: every turn also lands in .gev-logs/voice-conversations.jsonl
+  // (localhost only) so the history survives and stays analyzable.
+  mirrorToServer(conversationLog);
+  // View tracking: manual camera flights refresh what Live believes is on
+  // screen (debounced + throttled inside the controller). Best effort.
+  try { liveVoice.watchCamera(viewer); } catch { /* voice works untracked */ }
+  // Space (push-to-talk) bypasses the mic button and calls start() directly,
+  // so it needs the same routing. The probe is async but Space is sync:
+  // cache the route at init (refreshed on every mic click) and only use it
+  // when it positively says "no OpenAI key" — unknown keeps legacy behavior.
+  controller.freeVoice = freeVoice;
+  controller.liveVoice = liveVoice;
+  controller.freeVoicePreferred = false;
+  controller.liveVoicePreferred = false;
+  controller.freeVoiceSpaceHeld = false;
+  void Promise.all([probeOpenAiVoiceKey(), probeGeminiVoiceKey()]).then(([openai, gemini]) => {
+    controller.freeVoicePreferred = openai === false;
+    controller.liveVoicePreferred = openai === false && gemini === true;
+  });
   // Deferred annotation outlines finish AFTER their tool result returned. Feed the
   // final outcome (resolved / failed) into the conversation so the model can honestly
   // confirm — or correct — what it narrated about a boundary it never saw land.
@@ -211,8 +256,10 @@ export function initGevVoiceCommands({ viewer, styleManager, dataManager, sceneD
   }
   controller.buttonHandler = () => {
     if (shouldIgnoreVoiceButtonClick(controller.spaceKeyHeld)) return;
-    if (controller.isActive()) controller.stop();
-    else controller.start({ pushToTalk: false });
+    if (controller.isActive()) { controller.stop(); return; }
+    if (liveVoice.isActive()) { liveVoice.stop(); return; }
+    if (freeVoice.isActive()) { freeVoice.stop(); return; }
+    void startBestVoice(controller, freeVoice, liveVoice);
   };
   ui.button.addEventListener('click', controller.buttonHandler);
   if (ui.tierButton) {
@@ -222,7 +269,147 @@ export function initGevVoiceCommands({ viewer, styleManager, dataManager, sceneD
   controller.syncCostUi();
   controller.bindPushToTalkShortcut();
   window.__gevVoiceCommands = controller;
+  window.__gevFreeVoice = freeVoice;
+  window.__gevLiveVoice = liveVoice;
   return controller;
+}
+
+/**
+ * Ask the setup registry whether the OpenAI voice key is configured.
+ *
+ * @returns {Promise<boolean|null>} true/false, or null when unknown (the
+ *   caller keeps legacy behavior rather than guessing).
+ */
+export async function probeOpenAiVoiceKey() {
+  try {
+    const probe = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = probe ? setTimeout(() => { try { probe.abort(); } catch { /* noop */ } }, 6000) : null;
+    try {
+      const response = await fetch('/api/setup/status', { cache: 'no-store', signal: probe?.signal });
+      if (!response.ok) return null;
+      const status = await response.json().catch(() => null);
+      const openai = status?.keys?.find?.((key) => key?.id === 'openai');
+      return typeof openai?.set === 'boolean' ? openai.set : null;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ask the setup registry whether the Gemini voice key is configured.
+ *
+ * @returns {Promise<boolean|null>} true/false, or null when unknown.
+ */
+export async function probeGeminiVoiceKey() {
+  try {
+    const probe = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = probe ? setTimeout(() => { try { probe.abort(); } catch { /* noop */ } }, 6000) : null;
+    try {
+      const response = await fetch('/api/setup/status', { cache: 'no-store', signal: probe?.signal });
+      if (!response.ok) return null;
+      const status = await response.json().catch(() => null);
+      const gemini = status?.keys?.find?.((key) => key?.id === 'gemini');
+      return typeof gemini?.set === 'boolean' ? gemini.set : null;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Route the mic button: OpenAI Realtime when its key is configured, Gemini
+ * Live when only a Gemini key exists, local free voice otherwise. The status
+ * probe is the same registry the POWER UP panel renders
+ * (`GET /api/setup/status`); any probe failure keeps the legacy behavior
+ * (Realtime start, which reports its own error).
+ */
+export async function startBestVoice(controller, freeVoice, liveVoice = null) {
+  const [openai, gemini] = await Promise.all([probeOpenAiVoiceKey(), probeGeminiVoiceKey()]);
+  controller.freeVoicePreferred = openai === false;
+  controller.liveVoicePreferred = openai === false && gemini === true;
+  if (openai === true) {
+    if (freeVoice.isActive()) freeVoice.stop();
+    if (liveVoice?.isActive()) liveVoice.stop();
+    controller.start({ pushToTalk: false });
+    return;
+  }
+  if (openai === false && gemini === true && liveVoice) {
+    if (freeVoice.isActive()) freeVoice.stop();
+    const started = await liveVoice.start().catch((error) => ({ ok: false, error: error?.message }));
+    if (started?.ok) return;
+    // Live failed (mic denied, network, quota) — local voice still works.
+    if (liveVoice.isActive()) liveVoice.stop();
+    freeVoice.start();
+    return;
+  }
+  if (openai === false) {
+    if (liveVoice?.isActive()) liveVoice.stop();
+    freeVoice.start();
+    return;
+  }
+  controller.start({ pushToTalk: false });
+}
+
+/**
+ * Typed fallback for voice mode: a small command box under the mic control.
+ * Works in every browser (even without speech recognition or mic permission)
+ * and costs nothing. Talks to the Live session when one is active, otherwise
+ * to local free voice. Additive DOM only — removed with the voice root.
+ */
+function attachFreeVoiceTextInput(ui, freeVoice, liveVoice = null) {
+  try {
+    const root = ui?.root;
+    if (!root || root.querySelector('[data-gev-free-voice-form]')) return;
+    const form = document.createElement('form');
+    form.dataset.gevFreeVoiceForm = 'true';
+    form.className = 'gev-voice-text-form';
+    form.setAttribute('aria-label', 'Voice mode text command — no key needed');
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.name = 'command';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.maxLength = 280;
+    input.placeholder = 'Chat or command — e.g. take me to Tokyo';
+    input.setAttribute('aria-label', 'Type a chat message or voice command');
+    const send = document.createElement('button');
+    send.type = 'submit';
+    send.textContent = 'SEND';
+    send.setAttribute('aria-label', 'Run the typed command');
+    form.append(input, send);
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const text = input.value;
+      if (!String(text || '').trim()) return;
+      input.value = '';
+      // Reveal the chat history so typed answers are READ, not just heard —
+      // this box is the full chat surface when speaking is impossible.
+      try {
+        const drawer = root.querySelector('[data-gev-chat-log]');
+        const toggle = root.querySelector('[data-gev-chat-toggle]');
+        if (drawer && drawer.hidden) {
+          drawer.hidden = false;
+          toggle?.setAttribute?.('aria-expanded', 'true');
+        }
+      } catch { /* drawer is best effort */ }
+      if (liveVoice?.isActive?.() && typeof liveVoice?.sendText === 'function') {
+        if (!liveVoice.sendText(text) && typeof freeVoice?.handleText === 'function') {
+          void freeVoice.handleText(text);
+        }
+        return;
+      }
+      if (typeof freeVoice?.handleChatText === 'function') void freeVoice.handleChatText(text);
+      else if (typeof freeVoice?.handleText === 'function') void freeVoice.handleText(text);
+    });
+    root.appendChild(form);
+  } catch {
+    /* the text box is a convenience — voice works without it */
+  }
 }
 
 export class GevRealtimeController {
@@ -594,6 +781,19 @@ export class GevRealtimeController {
       if (this.isActive()) {
         this.setMicrophoneEnabled(true);
         if (this.status === 'listening') this.setStatus('listening', 'Release Space to send');
+      } else if (this.freeVoicePreferred && this.freeVoice) {
+        // Live is open-mic once started (server VAD + barge-in): Space starts
+        // it, release does nothing — the mic button (or Space again) stops it.
+        if (this.liveVoicePreferred && this.liveVoice) {
+          if (this.liveVoice.isActive()) this.liveVoice.stop();
+          else void this.liveVoice.start();
+        } else {
+          // Keyless route: Space drives free voice instead of Realtime. Track
+          // space ownership so keyup below stops only a space-started session —
+          // never a click-started free conversation.
+          this.freeVoiceSpaceHeld = true;
+          this.freeVoice.start();
+        }
       } else {
         this.start({ pushToTalk: true });
       }
@@ -602,6 +802,11 @@ export class GevRealtimeController {
       if (!isPushToTalkKey(event)) return;
       const wasHoldingSpace = this.spaceKeyHeld;
       this.spaceKeyHeld = false;
+      if (this.freeVoiceSpaceHeld) {
+        this.freeVoiceSpaceHeld = false;
+        // Graceful: let captured audio finish so the sentence survives release.
+        try { this.freeVoice?.stop?.({ graceful: true }); } catch { /* readout is best effort */ }
+      }
       if (!this.pushToTalkKeyHeld) {
         if (wasHoldingSpace) event.preventDefault();
         return;
@@ -611,6 +816,10 @@ export class GevRealtimeController {
     };
     this.shortcutBlurHandler = () => {
       this.spaceKeyHeld = false;
+      if (this.freeVoiceSpaceHeld) {
+        this.freeVoiceSpaceHeld = false;
+        try { this.freeVoice?.stop?.({ graceful: true }); } catch { /* readout is best effort */ }
+      }
       this.releasePushToTalkKey();
     };
     this.shortcutVisibilityHandler = () => {
@@ -2177,7 +2386,14 @@ function isSecretLikeKey(key) {
   return /(?:api[_-]?key|authorization|bearer|client[_-]?secret|token|secret|password)/i.test(key);
 }
 
-async function captureViewportImage() {
+/**
+ * Capture the current Cesium viewport as a JPEG data URL (fresh frame,
+ * pixel-budgeted, black/oversized frames refused). Shared by the OpenAI
+ * visual-grounding path below and the keyless see/describe flows, which
+ * receive it as an injected dependency (no import cycle). Exported for that
+ * injection + unit tests. Returns null when no honest capture is possible.
+ */
+export async function captureViewportImage() {
   const viewer = window.__godsEyeView?.viewer;
   const source = viewer?.scene?.canvas || document.querySelector('#cesiumContainer .cesium-widget canvas');
   if (!source || !source.width || !source.height) return null;
@@ -2196,14 +2412,17 @@ async function captureViewportImage() {
   canvas.height = height;
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
-  try {
-    ctx.drawImage(source, 0, 0, width, height);
-    if (isNearlyBlackFrame(ctx, width, height)) {
-      console.warn('[GEV Voice] Skipped black Cesium viewport capture');
-      return null;
-    }
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.74);
-    // Even after the pixel clamp, a busy frame can encode large. If the payload
+    try {
+      ctx.drawImage(source, 0, 0, width, height);
+      if (isNearlyBlackFrame(ctx, width, height)) {
+        console.warn('[GEV Voice] Skipped black Cesium viewport capture');
+        return null;
+      }
+      if (isUniformBlankFrame(ctx, width, height)) {
+        console.warn('[GEV Voice] Skipped blank (uniform) viewport capture');
+        return null;
+      }
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.74);    // Even after the pixel clamp, a busy frame can encode large. If the payload
     // would still overflow the data channel, skip the image rather than let the
     // send throw and strand the turn (M13). The caller falls through without it.
     if (estimateDataUrlBytes(dataUrl) > VIEWPORT_MAX_ENCODED_BYTES) {
@@ -2301,6 +2520,36 @@ function isNearlyBlackFrame(ctx, width, height) {
     luminanceTotal += pixels[index] * 0.2126 + pixels[index + 1] * 0.7152 + pixels[index + 2] * 0.0722;
   }
   return visiblePixels === 0 || luminanceTotal / visiblePixels < 2;
+}
+
+// A uniform frame (all-white loading wash, flat gray, unloaded tile void)
+// carries no visual information — describing it would waste a vision call on
+// "I see a blank screen". Variance-based so any flat color is caught, not
+// just black (which has its own check above). Pure → unit-tested.
+export function isUniformBlankFrame(ctx, width, height) {
+  const sampleWidth = Math.min(48, width);
+  const sampleHeight = Math.min(32, height);
+  if (!sampleWidth || !sampleHeight) return true;
+  const sampleCanvas = document.createElement('canvas');
+  sampleCanvas.width = sampleWidth;
+  sampleCanvas.height = sampleHeight;
+  const sampleCtx = sampleCanvas.getContext('2d', { willReadFrequently: true });
+  if (!sampleCtx) return false;
+  sampleCtx.drawImage(ctx.canvas, 0, 0, sampleWidth, sampleHeight);
+  const pixels = sampleCtx.getImageData(0, 0, sampleWidth, sampleHeight).data;
+  let count = 0;
+  let mean = 0;
+  let m2 = 0;
+  for (let index = 0; index < pixels.length; index += 4) {
+    if (pixels[index + 3] < 8) continue;
+    const luminance = pixels[index] * 0.2126 + pixels[index + 1] * 0.7152 + pixels[index + 2] * 0.0722;
+    count += 1;
+    const delta = luminance - mean;
+    mean += delta / count;
+    m2 += delta * (luminance - mean);
+  }
+  if (count === 0) return true;
+  return m2 / count < 25;
 }
 
 /**

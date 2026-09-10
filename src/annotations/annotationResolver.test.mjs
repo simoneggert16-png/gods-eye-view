@@ -12,6 +12,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  nominatimRowToPlace,
   resolveAnnotationTarget,
   selectFootprint,
   refineScope,
@@ -361,4 +362,30 @@ test('ask-side admin bypass: admin level 2/3 result types never grant a township
     2,
     'both township-level admin result types stay guarded',
   );
+});
+
+test('nominatim rows map onto the geocodePlace shape (twin of locations.js)', () => {
+  const hk = nominatimRowToPlace({
+    lat: 22.3193, lon: 114.1694, label: 'Hong Kong, China',
+    bbox: ['22.1535', '22.5628', '113.8255', '114.4412'],
+    placeClass: 'place', placeType: 'city', addressType: 'city',
+  });
+  assert.equal(hk.lat, 22.3193);
+  assert.equal(hk.primaryName, 'Hong Kong');
+  assert.deepEqual(hk.types, ['locality', 'political']);
+  assert.deepEqual(hk.viewport, {
+    low: { latitude: 22.1535, longitude: 113.8255 },
+    high: { latitude: 22.5628, longitude: 114.4412 },
+  });
+
+  const road = nominatimRowToPlace({
+    lat: 30.27, lon: -97.74, label: 'Sixth Street, Austin, Texas',
+    bbox: null, placeClass: 'highway', placeType: 'residential', addressType: 'road',
+  });
+  assert.deepEqual(road.types, ['route']);
+  assert.equal(road.viewport, null);
+
+  assert.equal(nominatimRowToPlace(null), null);
+  assert.equal(nominatimRowToPlace({ lat: 'north', lon: 0 }), null);
+  assert.equal(nominatimRowToPlace({ lat: 95, lon: 0 }), null);
 });

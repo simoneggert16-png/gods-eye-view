@@ -603,8 +603,8 @@ function ringAreaM2(ring) {
  * viewport so "the marina" resolves near where the user is looking.
  */
 async function geocodePlace(query, biasRect, signal) {
-  const apiKey = window.__GOOGLE_MAPS_API_KEY__ || import.meta.env.GOOGLE_MAPS_API_KEY;
-  if (!apiKey) return null;
+  const apiKey = (typeof window !== 'undefined' && window.__GOOGLE_MAPS_API_KEY__) || import.meta.env?.GOOGLE_MAPS_API_KEY;
+  if (!apiKey) return keylessNominatimPlace(query, signal);
 
   const cacheKey = `${query.toLowerCase()}|${biasRect || ''}`;
   const cached = cacheRead(geocodeCache, cacheKey);
@@ -654,6 +654,80 @@ function normalizeGeocodeViewport(vp) {
     low: { latitude: sw.lat, longitude: sw.lng },
     high: { latitude: ne.lat, longitude: ne.lng },
   };
+}
+
+/**
+ * Map a keyless /api/geocode (Nominatim) hit onto the geocodePlace shape
+ * ({ lat, lon, label, primaryName, types, viewport }). Twin of
+ * nominatimResultToGeocode in src/locations.js (kept separate: locations.js
+ * already imports FROM this module, so sharing one would cycle). Pure —
+ * unit-tested.
+ */
+export function nominatimRowToPlace(row) {
+  const lat = Number(row?.lat);
+  const lon = Number(row?.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+  const primaryName = String(row?.label || '').split(',')[0].trim().slice(0, 120) || 'Unknown place';
+  const kind = String(row?.addressType || row?.placeType || '').toLowerCase();
+  const cls = String(row?.placeClass || '').toLowerCase();
+  let types;
+  if (kind === 'country') types = ['country', 'political'];
+  else if (['state', 'county', 'administrative'].includes(kind) || cls === 'boundary') types = ['administrative_area_level_1', 'political'];
+  else if (['city', 'town', 'village', 'municipality', 'borough'].includes(kind)) types = ['locality', 'political'];
+  else if (['suburb', 'neighbourhood', 'neighborhood', 'hamlet', 'quarter'].includes(kind)) types = ['neighborhood'];
+  else if (kind === 'road' || cls === 'highway') types = ['route'];
+  else if (cls === 'natural') types = ['natural_feature'];
+  else if (kind === 'park' || cls === 'leisure') types = ['park'];
+  else if (cls === 'aeroway') types = ['airport'];
+  else if (kind === 'stadium') types = ['stadium'];
+  else if (kind === 'university' || kind === 'college') types = ['university'];
+  else types = [];
+  let viewport = null;
+  const bbox = Array.isArray(row?.bbox) ? row.bbox.map(Number) : [];
+  // Nominatim order: [south, north, west, east] → Places low/high shape.
+  if (bbox.length === 4 && bbox.every(Number.isFinite)) {
+    viewport = {
+      low: { latitude: bbox[0], longitude: bbox[2] },
+      high: { latitude: bbox[1], longitude: bbox[3] },
+    };
+  }
+  return { lat, lon, label: primaryName, primaryName, types, viewport };
+}
+
+/**
+ * Keyless forward geocode for annotations through the dev server's
+ * /api/geocode proxy (OpenStreetMap Nominatim — free, no key). Shares the
+ * geocodeCache with the Google path; a definitive miss is cached as such.
+ */
+async function keylessNominatimPlace(query, signal) {
+  const q = String(query || '').trim().slice(0, 160);
+  if (!q) return null;
+  const cacheKey = `${q.toLowerCase()}|nominatim`;
+  const cached = cacheRead(geocodeCache, cacheKey);
+  if (cached !== undefined) return cached;
+  try {
+    const response = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`, { signal });
+    if (!response.ok) {
+      negCache(geocodeCache, cacheKey, signal, false);
+      return null;
+    }
+    const data = await response.json().catch(() => null);
+    if (!data?.found) {
+      negCache(geocodeCache, cacheKey, signal, true);
+      return null;
+    }
+    const place = nominatimRowToPlace(data);
+    if (!place) {
+      negCache(geocodeCache, cacheKey, signal, true);
+      return null;
+    }
+    cacheWrite(geocodeCache, cacheKey, place);
+    return place;
+  } catch {
+    negCache(geocodeCache, cacheKey, signal, false);
+    return null;
+  }
 }
 
 const placesCache = new Map(); // Text Search hits, keyed by query + rounded view centre

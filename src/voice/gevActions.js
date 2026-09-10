@@ -428,10 +428,24 @@ export function createGevActionRunner({ viewer, styleManager, dataManager, scene
       }
       const hasLocationId = Boolean(String(args.locationId || '').trim());
       const hasLocationQuery = Boolean(String(args.locationQuery || '').trim());
-      const hasCoordinates = args.latitude != null
-        && args.longitude != null
-        && Number.isFinite(Number(args.latitude))
-        && Number.isFinite(Number(args.longitude));
+      let latitude = args.latitude != null && Number.isFinite(Number(args.latitude))
+        ? Number(args.latitude)
+        : null;
+      let longitude = args.longitude != null && Number.isFinite(Number(args.longitude))
+        ? Number(args.longitude)
+        : null;
+      if (latitude == null && longitude == null && !hasLocationId && !hasLocationQuery) {
+        // "Nearest" with nothing named means near the CAMERA — read it instead
+        // of refusing ("zeige mir irgendein Militärflugzeug" over ocean).
+        try {
+          const carto = viewer?.camera?.positionCartographic;
+          if (carto && Number.isFinite(carto.latitude) && Number.isFinite(carto.longitude)) {
+            latitude = Cesium.Math.toDegrees(carto.latitude);
+            longitude = Cesium.Math.toDegrees(carto.longitude);
+          }
+        } catch { /* fall through to the honest error below */ }
+      }
+      const hasCoordinates = latitude != null && longitude != null;
       if (!hasLocationId && !hasLocationQuery && !hasCoordinates) {
         return {
           ok: false,
@@ -444,10 +458,7 @@ export function createGevActionRunner({ viewer, styleManager, dataManager, scene
         waitForArrival: true,
         ...(args.locationId ? { locationId: args.locationId } : {}),
         ...(args.locationQuery ? { query: args.locationQuery } : {}),
-        ...(hasCoordinates ? {
-          latitude: Number(args.latitude),
-          longitude: Number(args.longitude),
-        } : {}),
+        ...(hasCoordinates ? { latitude, longitude } : {}),
       };
       const layer = await runGevAction('set_layer_visibility', {
         layerId,
@@ -811,6 +822,10 @@ export function createGevActionRunner({ viewer, styleManager, dataManager, scene
 
     if (name === 'next_iss_pass') {
       return nextIssPass(viewer, args);
+    }
+
+    if (name === 'web_search') {
+      return webSearch(args);
     }
 
     if (name === 'analyst_query') {
@@ -1655,8 +1670,26 @@ async function trackEntity(viewer, dataManager, styleManager, args = {}) {
   const query = String(args.query || '').trim();
   if (!query) throw new Error('track_entity needs a query');
 
-  // Fire queries route to the FIRMS layer's strongest detection
+  // Fire queries route to the FIRMS layer's strongest detection.
+  // The layer self-enables first: voice must never answer "turn it on
+  // yourself" when it can do it in the same breath (same _setEnabledWithIntent
+  // pattern as set_layer_visibility above).
   if (/\bfires?\b/i.test(query)) {
+    if (!dataManager.isEnabled('local-firms')) {
+      try {
+        if (typeof dataManager._setEnabledWithIntent === 'function') {
+          const intent = dataManager._setEnabledWithIntent('local-firms', true, { origin: 'voice' });
+          await intent.promise;
+          if (Number.isInteger(intent.intentEpoch)) {
+            await dataManager._waitForVisibilityIntent?.('local-firms', intent.intentEpoch);
+          }
+        } else {
+          await dataManager.setEnabled('local-firms', true, { origin: 'voice' });
+        }
+      } catch {
+        /* fall through — the checks below report honestly */
+      }
+    }
     if (!dataManager.isEnabled('local-firms')) {
       return { ok: false, action: 'track_entity', query, error: 'The FIRMS fires layer is not enabled' };
     }
@@ -2001,12 +2034,19 @@ function adjustCameraZoom(viewer, args) {
   const minimumDistanceM = direction === 'in' ? 20 : 50;
   const movementM = Math.max(minimumDistanceM, targetDistanceM * fraction);
 
+  // While Cesium follows a tracked entity it re-asserts the camera every
+  // frame, which silently eats a programmatic zoom ("voice zoom does nothing
+  // while tracking"). Park the follow, zoom, then re-adopt: Cesium keeps the
+  // NEW offset, so the zoom sticks and tracking continues.
+  const followedEntity = viewer.trackedEntity || null;
+  if (followedEntity) viewer.trackedEntity = undefined;
   camera.cancelFlight();
   if (direction === 'out') {
     camera.zoomOut(movementM);
   } else {
     const safeMovementM = Math.min(movementM, Math.max(0, targetDistanceM - 25));
     if (safeMovementM <= 0) {
+      if (followedEntity) viewer.trackedEntity = followedEntity;
       return {
         ok: false,
         action: 'adjust_camera_zoom',
@@ -2017,6 +2057,30 @@ function adjustCameraZoom(viewer, args) {
     }
     camera.zoomIn(safeMovementM);
   }
+  // Ground floor: at low altitude a far/horizon target makes the step dive
+  // past the surface (field repro: 600 m → −6,922 m). Clamp back above ground,
+  // keeping longitude, latitude, and orientation.
+  const MIN_ZOOM_HEIGHT_M = 25;
+  try {
+    const afterCartographic = camera.positionCartographic;
+    if (Number.isFinite(afterCartographic?.height) && afterCartographic.height < MIN_ZOOM_HEIGHT_M) {
+      camera.setView({
+        destination: Cesium.Cartesian3.fromRadians(
+          afterCartographic.longitude,
+          afterCartographic.latitude,
+          MIN_ZOOM_HEIGHT_M,
+        ),
+        orientation: {
+          heading: camera.heading,
+          pitch: camera.pitch,
+          roll: camera.roll,
+        },
+      });
+    }
+  } catch {
+    /* clamp is best effort — the measured move below reports the truth */
+  }
+  if (followedEntity) viewer.trackedEntity = followedEntity;
   viewer.scene.requestRender();
 
   const afterPosition = camera.positionWC;
@@ -2078,6 +2142,37 @@ function nextIssPass(viewer, args) {
     peakElevationDeg: Math.round(pass.maxElevDeg),
     riseDirection: compassDir(pass.riseAzDeg),
   };
+}
+
+/**
+ * Public-web search for the AI (Wikipedia first, DuckDuckGo fallback — no
+ * key, brokered same-origin). Returns short sourced facts the model answers
+ * from instead of guessing. Never throws: failures are honest results.
+ */
+async function webSearch(args = {}) {
+  const query = String(args?.query || '').trim().slice(0, 200);
+  if (!query) {
+    return { ok: false, action: 'web_search', query, error: 'web_search needs a query' };
+  }
+  try {
+    const response = await fetch(`/api/web-search?q=${encodeURIComponent(query)}`);
+    if (!response.ok) {
+      return { ok: false, action: 'web_search', query, error: `Search backend returned ${response.status}` };
+    }
+    const data = await response.json().catch(() => null);
+    const results = Array.isArray(data?.results) ? data.results.slice(0, 3).map((row) => ({
+      title: String(row?.title || '').slice(0, 160),
+      snippet: String(row?.snippet || '').slice(0, 600),
+      url: String(row?.url || '').slice(0, 300),
+      source: String(row?.source || '').slice(0, 40),
+    })) : [];
+    if (!results.length) {
+      return { ok: false, action: 'web_search', query, error: `No web results for "${query}"` };
+    }
+    return { ok: true, action: 'web_search', query, results };
+  } catch (error) {
+    return { ok: false, action: 'web_search', query, error: error?.message || 'Web search failed' };
+  }
 }
 
 function normalizePanelId(value) {
@@ -2266,8 +2361,9 @@ async function flyToRequestedLocation(viewer, args, {
     return afterArrival(response, response.label);
   }
 
-  const latitude = Number(args.latitude);
-  const longitude = Number(args.longitude);
+  const queryCoords = parseLatLonQuery(args.query);
+  const latitude = queryCoords?.latitude ?? Number(args.latitude);
+  const longitude = queryCoords?.longitude ?? Number(args.longitude);
   if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
     const result = immediate(() => flyToLandmark(viewer, latitude, longitude, {
       range: rangeM || 250,
@@ -2332,11 +2428,22 @@ async function flyToRequestedLocation(viewer, args, {
       onStart: managedDeferred ? null : onStart,
     });
     if (destination?.cancelled) return cancelled(query);
+    if (!destination) {
+      return {
+        ok: false,
+        action: 'fly_to_location',
+        query,
+        label: query,
+        error: `Place "${query}" not found — try a different spelling or a nearby bigger place`,
+      };
+    }
     const response = {
-      ok: Boolean(destination),
+      ok: true,
       action: 'fly_to_location',
       query,
       label: destination?.label || query,
+      latitude: destination?.latitude ?? null,
+      longitude: destination?.longitude ?? null,
       navigationMode: destination?.navigationMode || null,
       rangeM: destination?.rangeM || rangeM || null,
     };
@@ -2346,8 +2453,21 @@ async function flyToRequestedLocation(viewer, args, {
   throw new Error('fly_to_location needs a locationId, query, or latitude/longitude');
 }
 
-function normalizeLocationId(value) {
-  const raw = String(value || '').trim().toLowerCase();
+/**
+ * Parse a "lat,lon" coordinate string (models pack them this way) into
+ * numbers, or null when it is not one. Pure; range-checked.
+ */
+export function parseLatLonQuery(value) {
+  const match = /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/.exec(String(value || ''));
+  if (!match) return null;
+  const latitude = Number(match[1]);
+  const longitude = Number(match[2]);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return null;
+  return { latitude, longitude };
+}
+
+function normalizeLocationId(value) {  const raw = String(value || '').trim().toLowerCase();
   if (!raw) return null;
   if (CITY_POIS[raw]) return raw;
   if (CITY_ALIASES.has(raw)) return CITY_ALIASES.get(raw);

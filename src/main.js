@@ -34,6 +34,7 @@ import { installScopeMask } from './scopeMask.js';
 import { initFirstRunExperience } from './firstRunExperience.js';
 import { initKeySetup } from './keySetup.js';
 import { loadPhotorealisticTileset } from './mapStartup.js';
+import { gatekeeper } from './pinGate.js';
 
 initLogoGaze();
 
@@ -335,4 +336,4 @@ async function init() {
   }
 }
 
-init();
+gatekeeper(init);

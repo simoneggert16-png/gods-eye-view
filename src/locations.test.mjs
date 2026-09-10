@@ -15,6 +15,8 @@ import {
   flyToGlobeView,
   flyToPresetLocation,
   geocodeNavigationMode,
+  nominatimResultToGeocode,
+  placeQueryVariants,
   regionFramingPlan,
   REGION_SWATH_SPAN_KM,
   GLOBE_VIEW,
@@ -596,4 +598,126 @@ test('search without an authority hook preserves the existing caller contract', 
   const result = await runSearch(viewer, {});
   assert.equal(result.navigationMode, 'city-overview');
   assert.equal(viewer.flights.length, 1);
+});
+
+test('nominatim mapper: city frames as locality with a real viewport', () => {
+  // Hong Kong shape as /api/geocode returns it (bbox: south, north, west, east).
+  const geo = nominatimResultToGeocode({
+    lat: 22.3193, lon: 114.1694, label: 'Hong Kong',
+    bbox: ['22.1535', '22.5628', '113.8255', '114.4412'],
+    placeClass: 'place', placeType: 'city', addressType: 'city',
+  });
+  assert.equal(geo.lat, 22.3193);
+  assert.equal(geo.lng, 114.1694);
+  assert.deepEqual(geo.types, ['locality', 'political']);
+  assert.equal(geocodeNavigationMode(geo.types), 'city-overview');
+  assert.deepEqual(geo.viewport, {
+    southwest: { lat: 22.1535, lng: 113.8255 },
+    northeast: { lat: 22.5628, lng: 114.4412 },
+  });
+});
+
+test('nominatim mapper: country/road/park map to their framing modes', () => {
+  assert.deepEqual(
+    nominatimResultToGeocode({ lat: 46, lon: 2, label: 'France', bbox: null, placeClass: 'boundary', placeType: 'administrative', addressType: 'country' }).types,
+    ['country', 'political'],
+  );
+  assert.deepEqual(
+    nominatimResultToGeocode({ lat: 30.27, lon: -97.74, label: 'Sixth Street', bbox: null, placeClass: 'highway', placeType: 'residential', addressType: 'road' }).types,
+    ['route'],
+  );
+  assert.deepEqual(
+    nominatimResultToGeocode({ lat: 30.26, lon: -97.77, label: 'Zilker Park', bbox: null, placeClass: 'leisure', placeType: 'park', addressType: 'park' }).types,
+    ['park'],
+  );
+});
+
+test('nominatim mapper rejects garbage instead of flying nowhere', () => {
+  assert.equal(nominatimResultToGeocode(null), null);
+  assert.equal(nominatimResultToGeocode({}), null);
+  assert.equal(nominatimResultToGeocode({ lat: 'north', lon: 114 }), null);
+  assert.equal(nominatimResultToGeocode({ lat: 22, lon: 200 }), null);
+  // Missing bbox still flies precise-place on the point.
+  const point = nominatimResultToGeocode({ lat: 22.3, lon: 114.1, label: 'Somewhere', bbox: null, placeClass: '', placeType: '', addressType: '' });
+  assert.equal(point.viewport, null);
+  assert.equal(geocodeNavigationMode(point.types), 'precise-place');
+});
+
+/** Keyless search: no window key, stubbed /api/geocode + empty Places recovery. */
+async function runKeylessSearch(viewer, query, geocodePayload) {
+  const hadWindow = Object.hasOwn(globalThis, 'window');
+  const priorWindow = globalThis.window;
+  const priorFetch = globalThis.fetch;
+  if (hadWindow) delete globalThis.window;
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    if (target.startsWith('/api/geocode')) {
+      return { ok: true, json: async () => geocodePayload };
+    }
+    return { ok: true, json: async () => ({ places: [] }) };
+  };
+  try {
+    return await searchAndFlyTo(viewer, query, {});
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (hadWindow) globalThis.window = priorWindow;
+  }
+}
+
+test('keyless search flies to Hong Kong instead of throwing a geocoding error', async () => {
+  const viewer = stubViewer();
+  const result = await runKeylessSearch(viewer, 'hongkong', {
+    found: true, lat: 22.3193, lon: 114.1694, label: 'Hong Kong',
+    bbox: ['22.1535', '22.5628', '113.8255', '114.4412'],
+    placeClass: 'place', placeType: 'city', addressType: 'city',
+  });
+  assert.equal(result.navigationMode, 'city-overview');
+  assert.equal(viewer.flights.length, 1);
+  const box = flownRectangleDegrees(viewer, 0);
+  assert.ok(box.south < 22.32 && box.north > 22.32, 'frames the geocoded viewport');
+});
+
+test('keyless search returns null (no flight) when nothing is found', async () => {
+  const viewer = stubViewer();
+  const result = await runKeylessSearch(viewer, 'xyznonexistentplace', { found: false });
+  assert.equal(result, null);
+  assert.equal(viewer.flights.length, 0);
+});
+
+test('possessive variants retry genitives without breaking real names', async () => {
+  assert.deepEqual(placeQueryVariants('epsteins island'), ['epsteins island', 'epstein island']);
+  assert.deepEqual(placeQueryVariants("epstein's island"), ["epstein's island", 'epstein island']);
+  assert.deepEqual(placeQueryVariants('Texas'), ['Texas']);
+  assert.deepEqual(placeQueryVariants('Paris'), ['Paris']);
+  assert.deepEqual(placeQueryVariants(''), ['']);
+});
+
+test('keyless search retries the genitive variant after a miss', async () => {
+  const viewer = stubViewer();
+  const seen = [];
+  const hadWindow = Object.hasOwn(globalThis, 'window');
+  const priorWindow = globalThis.window;
+  const priorFetch = globalThis.fetch;
+  if (hadWindow) delete globalThis.window;
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    if (target.startsWith('/api/geocode')) {
+      const query = new URL(target, 'http://localhost').searchParams.get('q');
+      seen.push(query);
+      if (query === 'epstein island') {
+        return { ok: true, json: async () => ({ found: true, lat: 18.3, lon: -64.82, label: 'Little Saint James', bbox: null, placeClass: 'place', placeType: 'island', addressType: '' }) };
+      }
+      return { ok: true, json: async () => ({ found: false }) };
+    }
+    return { ok: true, json: async () => ({ places: [] }) };
+  };
+  try {
+    const result = await searchAndFlyTo(viewer, 'epsteins island', {});
+    assert.deepEqual(seen, ['epsteins island', 'epstein island']);
+    assert.ok(result, 'second variant hits');
+    assert.equal(viewer.flights.length, 1);
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (hadWindow) globalThis.window = priorWindow;
+  }
 });

@@ -75,6 +75,35 @@ import {
   validTerrainResult,
 } from './src/data/terrainHeightsProxy.js';
 import { VOICE_MODELS, isKnownVoiceTier, resolveVoiceModel } from './src/voice/voiceCost.js';
+import {
+  buildGeminiRequest,
+  buildGeminiTTSRequest,
+  buildLiveTokenRequest,
+  buildSeeRequest,
+  extractGeminiAnswerText,
+  extractGeminiTTSAudio,
+  GEMINI_MAX_RESPONSE_BYTES,
+  GEMINI_MAX_TTS_BYTES,
+  GEMINI_SEE_MAX_IMAGE_BYTES,
+  isValidGeminiModel,
+  resolveGeminiLiveModel,
+  resolveGeminiModel,
+  resolveGeminiVoice,
+} from './src/voice/gevGemini.js';
+import {
+  buildOllamaChatRequest,
+  extractOllamaChatAnswer,
+  OLLAMA_MAX_RESPONSE_BYTES,
+  resolveOllamaModel,
+} from './src/voice/gevOllama.js';
+import {
+  buildZaiChatRequest,
+  extractZaiChatAnswer,
+  resolveZaiModel,
+  ZAI_MAX_RESPONSE_BYTES,
+} from './src/voice/gevZai.js';
+import { pinGateProxy } from './src/pinGateServer.js';
+
 
 /** Resolve __dirname for ESM context. */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -513,6 +542,12 @@ function openAiRateLimiter() {
 function googleRateLimiter() {
   if (_googleRateLimiter === undefined) _googleRateLimiter = makeOptInRateLimiter(process.env.GEV_RATELIMIT_GOOGLE_PER_MIN);
   return _googleRateLimiter;
+}
+let _geminiRateLimiter; // undefined = not built yet; null = unlimited; fn = active limiter
+/** Gemini free-tier Q&A endpoint (/api/gemini/ask). Null = unlimited (default). */
+function geminiRateLimiter() {
+  if (_geminiRateLimiter === undefined) _geminiRateLimiter = makeOptInRateLimiter(process.env.GEV_RATELIMIT_GEMINI_PER_MIN);
+  return _geminiRateLimiter;
 }
 
 /**
@@ -4852,6 +4887,285 @@ function adsbLolProxy() {
 }
 
 /**
+ * Vite plugin: keyless forward geocoding for fly-to-place without a Google key.
+ *
+ * searchAndFlyTo geocodes through Google (metered) when a key exists; without
+ * one every free-form place ("hongkong", "Stanford Bridge") used to throw.
+ * This proxy answers GET /api/geocode?q= from OpenStreetMap Nominatim — free,
+ * no key — reusing the repo's polite Nominatim pattern (shared 1.1 s throttle
+ * queue, identifying User-Agent) plus a 24 h in-memory cache so repeated
+ * voice commands never touch upstream twice.
+ */
+const GEOCODE_CACHE_MS = 24 * 60 * 60 * 1000;
+const GEOCODE_CACHE_MAX = 200;
+const GEOCODE_MAX_RESPONSE_BYTES = 64 * 1024;
+function geocodeProxy() {
+  /** @type {Map<string,{at:number,body:string}>} */
+  const cache = new Map();
+  function install(middlewares) {
+    middlewares.use('/api/geocode', async (req, res) => {
+      const json = (status, payload) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'GET') {
+        json(405, { error: 'Method not allowed', found: false });
+        return;
+      }
+      let query = '';
+      try {
+        query = String(new URL(req.url || '', 'http://localhost').searchParams.get('q') || '').trim().slice(0, 160);
+      } catch {
+        query = '';
+      }
+      if (!query) {
+        json(400, { error: 'Missing q', found: false });
+        return;
+      }
+      const key = query.toLowerCase();
+      const hit = cache.get(key);
+      if (hit && Date.now() - hit.at < GEOCODE_CACHE_MS) {
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('X-Geocode-Cache', 'HIT');
+        res.end(hit.body);
+        return;
+      }
+      // Share the repo-wide Nominatim throttle (regional brief reverse lookups
+      // use the same queue): at most one upstream request per ~1.1 s, which is
+      // what the Nominatim usage policy asks of us.
+      const task = _nominatimQueue.then(async () => {
+        const waitMs = Math.max(0, 1100 - (Date.now() - _nominatimLastRequestAt));
+        if (waitMs) await new Promise((resolve) => setTimeout(resolve, waitMs));
+        _nominatimLastRequestAt = Date.now();
+        const params = new URLSearchParams({
+          format: 'jsonv2',
+          q: query,
+          limit: '1',
+          addressdetails: '0',
+          'accept-language': 'en',
+        });
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 12_000);
+        try {
+          const upstream = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
+            signal: controller.signal,
+            headers: {
+              'User-Agent': 'GodsEyeView/0.1 (+https://github.com/bilawalsidhu/gods-eye-view)',
+              Referer: 'https://github.com/bilawalsidhu/gods-eye-view',
+            },
+          });
+          if (!upstream.ok) throw new Error(`Nominatim returned ${upstream.status}`);
+          const rows = JSON.parse(await readResponseTextCapped(upstream, GEOCODE_MAX_RESPONSE_BYTES));
+          const row = Array.isArray(rows) ? rows[0] : null;
+          if (!row || !Number.isFinite(Number(row?.lat)) || !Number.isFinite(Number(row?.lon))) {
+            return JSON.stringify({ found: false, query });
+          }
+          return JSON.stringify({
+            found: true,
+            query,
+            lat: Number(row.lat),
+            lon: Number(row.lon),
+            label: String(row.display_name || query).slice(0, 200),
+            bbox: Array.isArray(row.boundingbox) ? row.boundingbox.map(String).slice(0, 4) : null,
+            placeClass: String(row.class || ''),
+            placeType: String(row.type || ''),
+            addressType: String(row.addresstype || row.type || ''),
+          });
+        } finally {
+          clearTimeout(timer);
+        }
+      });
+      _nominatimQueue = task.catch(() => null);
+      let body;
+      try {
+        body = await task;
+      } catch {
+        json(502, { error: 'Geocode lookup failed', found: false, query });
+        return;
+      }
+      cache.set(key, { at: Date.now(), body });
+      while (cache.size > GEOCODE_CACHE_MAX) {
+        const oldest = cache.keys().next().value;
+        if (oldest === undefined) break;
+        cache.delete(oldest);
+      }
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('X-Geocode-Cache', 'MISS');
+      res.end(body);
+    });
+  }
+
+  return {
+    name: 'geocode-proxy',
+    configureServer(server) {
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
+    },
+  };
+}
+
+/** Disk-free 1 h result cache for web search (keyed by lowercase query). */
+const WEB_SEARCH_CACHE_MS = 60 * 60 * 1000;
+const WEB_SEARCH_CACHE_MAX = 200;
+const WEB_SEARCH_MAX_RESPONSE_BYTES = 128 * 1024;
+
+/**
+ * Vite plugin: public-web search for the AI (Wikipedia first, DuckDuckGo
+ * instant-answer fallback). No key needed. Backs the `web_search` voice tool
+ * so the model looks facts up instead of guessing populations and events.
+ */
+function webSearchProxy() {
+  /** @type {Map<string,{at:number,body:string}>} */
+  const cache = new Map();
+  const HEADERS = {
+    'User-Agent': 'GodsEyeView/0.1 (+https://github.com/bilawalsidhu/gods-eye-view)',
+    Referer: 'https://github.com/bilawalsidhu/gods-eye-view',
+  };
+
+  async function wikipediaSearch(query) {
+    const params = new URLSearchParams({
+      action: 'query', list: 'search', srsearch: query, format: 'json', srlimit: '3',
+    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 9000);
+    try {
+      const search = await fetch(`https://en.wikipedia.org/w/api.php?${params}`, {
+        signal: controller.signal, headers: HEADERS,
+      });
+      if (!search.ok) return [];
+      const found = await readResponseJsonCapped(search, WEB_SEARCH_MAX_RESPONSE_BYTES);
+      const hits = Array.isArray(found?.query?.search) ? found.query.search.slice(0, 2) : [];
+      const results = [];
+      for (const hit of hits) {
+        const title = String(hit?.title || '');
+        if (!title) continue;
+        const extractParams = new URLSearchParams({
+          action: 'query', prop: 'extracts', exintro: '1', explaintext: '1',
+          titles: title, format: 'json',
+        });
+        try {
+          const page = await fetch(`https://en.wikipedia.org/w/api.php?${extractParams}`, {
+            signal: controller.signal, headers: HEADERS,
+          });
+          if (!page.ok) continue;
+          const data = await readResponseJsonCapped(page, WEB_SEARCH_MAX_RESPONSE_BYTES);
+          const pages = data?.query?.pages || {};
+          const first = Object.values(pages)[0] || {};
+          const snippet = String(first?.extract || '').slice(0, 600);
+          if (!snippet) continue;
+          results.push({
+            title,
+            snippet,
+            url: `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, '_'))}`,
+            source: 'Wikipedia',
+          });
+        } catch { /* one bad page must not kill the search */ }
+      }
+      return results;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function duckDuckGoSearch(query) {
+    const params = new URLSearchParams({ q: query, format: 'json', no_html: '1', skip_disambig: '1' });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 9000);
+    try {
+      const response = await fetch(`https://api.duckduckgo.com/?${params}`, {
+        signal: controller.signal, headers: HEADERS,
+      });
+      if (!response.ok) return [];
+      const data = await readResponseJsonCapped(response, WEB_SEARCH_MAX_RESPONSE_BYTES);
+      const results = [];
+      if (String(data?.AbstractText || '').trim()) {
+        results.push({
+          title: String(data?.Heading || query).slice(0, 160),
+          snippet: String(data.AbstractText).slice(0, 600),
+          url: String(data?.AbstractURL || ''),
+          source: 'DuckDuckGo',
+        });
+      }
+      return results;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function install(middlewares) {
+    middlewares.use('/api/web-search', async (req, res) => {
+      const json = (status, payload) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'GET') {
+        json(405, { error: 'Method not allowed', results: [] });
+        return;
+      }
+      let query = '';
+      try {
+        query = String(new URL(req.url || '', 'http://localhost').searchParams.get('q') || '').trim().slice(0, 200);
+      } catch {
+        query = '';
+      }
+      if (!query) {
+        json(400, { error: 'Missing q', results: [] });
+        return;
+      }
+      const key = query.toLowerCase();
+      const hit = cache.get(key);
+      if (hit && Date.now() - hit.at < WEB_SEARCH_CACHE_MS) {
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('X-WebSearch-Cache', 'HIT');
+        res.end(hit.body);
+        return;
+      }
+      let results = [];
+      try {
+        results = await wikipediaSearch(query);
+        if (!results.length) results = await duckDuckGoSearch(query);
+      } catch {
+        results = [];
+      }
+      const body = JSON.stringify({ query, results, count: results.length });
+      cache.set(key, { at: Date.now(), body });
+      while (cache.size > WEB_SEARCH_CACHE_MAX) {
+        const oldest = cache.keys().next().value;
+        if (oldest === undefined) break;
+        cache.delete(oldest);
+      }
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('X-WebSearch-Cache', 'MISS');
+      res.end(body);
+    });
+  }
+
+  return {
+    name: 'web-search-proxy',
+    configureServer(server) {
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
+    },
+  };
+}
+
+/**
  * Vite plugin: AISStream live vessel cache.
  *
  * AISStream does not support browser CORS and requires a private API key, so
@@ -5351,6 +5665,599 @@ function toFiveWordHudSummary(value) {
     .filter(Boolean)
     .slice(0, 5)
     .join(' ');
+}
+
+/**
+ * Shared helper: POST a chat body upstream with a Bearer key.
+ * Returns { status, data } with a capped, parsed body (or {}).
+ */
+async function postChatUpstream(url, apiKey, body, maxBytes) {
+  const upstream = await fetch(url, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+  if (upstream.status >= 300 && upstream.status < 400) {
+    try { await upstream.body?.cancel?.(); } catch { /* no-op */ }
+    return { status: 502, data: {}, refusedRedirect: true };
+  }
+  let data = {};
+  try {
+    data = JSON.parse(await readResponseTextCapped(upstream, maxBytes));
+  } catch {
+    return { status: 502, data: {}, unreadable: true };
+  }
+  return { status: upstream.status, data, ok: upstream.ok };
+}
+
+/**
+ * Vite plugin: typed-chat brains (Ollama Cloud + Z.AI GLM).
+ *
+ * Both keys stay server-side (Bearer header, never in URLs); the browser
+ * posts same-origin:
+ *   POST /api/ollama/chat { message, context? } → { answer }
+ *   POST /api/zai/chat    { message, context? } → { answer }
+ * Model ids are gated so the fixed upstream URLs cannot become SSRF
+ * primitives. 503 + GEMINI-style NOT_CONFIGURED codes when the key is
+ * missing so the client can fall through to the next brain.
+ */
+export function chatBrainsProxy() {
+  function install(middlewares) {
+    middlewares.use('/api/ollama/chat', async (req, res) => {
+      const json = (status, payload, retryAfter) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        if (retryAfter) res.setHeader('Retry-After', String(retryAfter));
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'POST') {
+        json(405, { error: 'Method not allowed', answer: null });
+        return;
+      }
+      const apiKey = String(process.env.OLLAMA_API_KEY || '').trim();
+      if (!apiKey) {
+        json(503, { error: 'OLLAMA_API_KEY is not set', code: 'OLLAMA_NOT_CONFIGURED', answer: null });
+        return;
+      }
+      let message = '';
+      let contextText = '';
+      let system = '';
+      let images = null;
+      try {
+        const parsed = JSON.parse(await readRequestBody(req, 640 * 1024) || '{}');
+        message = String(parsed?.message || '').trim();
+        contextText = String(parsed?.context || '').trim();
+        system = String(parsed?.system || '').trim().slice(0, 2000);
+        if (Array.isArray(parsed?.images)) images = parsed.images.slice(0, 2).map(String).map((s) => s.slice(0, 400000));
+      } catch {
+        json(400, { error: 'Malformed JSON body', answer: null });
+        return;
+      }
+      if (!message) {
+        json(400, { error: 'Missing message', answer: null });
+        return;
+      }
+      const { model, body } = buildOllamaChatRequest({ message, contextText, model: process.env.OLLAMA_MODEL, visionModel: process.env.OLLAMA_VISION_MODEL, system, images });
+      let result;
+      try {
+        result = await postChatUpstream('https://ollama.com/api/chat', apiKey, body, OLLAMA_MAX_RESPONSE_BYTES);
+      } catch (error) {
+        json(502, { error: `Ollama request failed: ${String(error?.message || error).slice(0, 120)}`, answer: null });
+        return;
+      }
+      if (result.refusedRedirect) {
+        json(502, { error: 'Ollama redirects are refused', answer: null });
+        return;
+      }
+      if (result.unreadable) {
+        json(502, { error: 'Ollama response too large or unreadable', answer: null });
+        return;
+      }
+      if (result.status === 429) {
+        json(429, { error: 'Ollama quota exhausted — try again in a minute', retryable: true, answer: null }, 60);
+        return;
+      }
+      if (result.status === 401 || result.status === 403) {
+        json(502, { error: 'Ollama rejected the API key', answer: null });
+        return;
+      }
+      if (!result.ok) {
+        const detail = String(result.data?.error || '').slice(0, 200);
+        json(502, { error: detail ? `Ollama error: ${detail}` : `Ollama returned ${result.status}`, answer: null });
+        return;
+      }
+      const { text, blocked, reason } = extractOllamaChatAnswer(result.data);
+      if (!text) {
+        json(200, { answer: null, blocked: true, error: `Ollama gave no answer (${reason})` });
+        return;
+      }
+      json(200, { answer: text.slice(0, 1200), blocked: false, error: null });
+    });
+
+    middlewares.use('/api/zai/chat', async (req, res) => {
+      const json = (status, payload, retryAfter) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        if (retryAfter) res.setHeader('Retry-After', String(retryAfter));
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'POST') {
+        json(405, { error: 'Method not allowed', answer: null });
+        return;
+      }
+      const apiKey = String(process.env.ZAI_API_KEY || '').trim();
+      if (!apiKey) {
+        json(503, { error: 'ZAI_API_KEY is not set', code: 'ZAI_NOT_CONFIGURED', answer: null });
+        return;
+      }
+      let message = '';
+      let contextText = '';
+      let system = '';
+      try {
+        const parsed = JSON.parse(await readRequestBody(req, 16 * 1024) || '{}');
+        message = String(parsed?.message || '').trim();
+        contextText = String(parsed?.context || '').trim();
+        system = String(parsed?.system || '').trim().slice(0, 2000);
+      } catch {
+        json(400, { error: 'Malformed JSON body', answer: null });
+        return;
+      }
+      if (!message) {
+        json(400, { error: 'Missing message', answer: null });
+        return;
+      }
+      const { model, body } = buildZaiChatRequest({ message, contextText, model: process.env.ZAI_MODEL, system });
+      let result;
+      try {
+        result = await postChatUpstream('https://api.z.ai/api/paas/v4/chat/completions', apiKey, body, ZAI_MAX_RESPONSE_BYTES);
+      } catch (error) {
+        json(502, { error: `Z.AI request failed: ${String(error?.message || error).slice(0, 120)}`, answer: null });
+        return;
+      }
+      if (result.refusedRedirect) {
+        json(502, { error: 'Z.AI redirects are refused', answer: null });
+        return;
+      }
+      if (result.unreadable) {
+        json(502, { error: 'Z.AI response too large or unreadable', answer: null });
+        return;
+      }
+      if (result.status === 429) {
+        json(429, { error: 'Z.AI quota exhausted — try again in a minute', retryable: true, answer: null }, 60);
+        return;
+      }
+      if (result.status === 401 || result.status === 403) {
+        json(502, { error: 'Z.AI rejected the API key', answer: null });
+        return;
+      }
+      if (!result.ok) {
+        const detail = String(result.data?.error?.message || result.data?.error || '').slice(0, 200);
+        json(502, { error: detail ? `Z.AI error: ${detail}` : `Z.AI returned ${result.status}`, answer: null });
+        return;
+      }
+      const { text, blocked, reason } = extractZaiChatAnswer(result.data);
+      if (!text) {
+        json(200, { answer: null, blocked: true, error: `Z.AI gave no answer (${reason})` });
+        return;
+      }
+      json(200, { answer: text.slice(0, 1200), blocked: false, error: null });
+    });
+  }
+
+  return {
+    name: 'chat-brains-proxy',
+    configureServer(server) {
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
+    },
+  };
+}
+
+/**
+ * Vite plugin: Gemini free-tier Q&A for free voice.
+ *
+ * Keeps GEMINI_API_KEY server-side while the browser asks open questions
+ * through same-origin POST /api/gemini/ask. The key travels in the
+ * x-goog-api-key header (never in a URL, so it stays out of access logs);
+ * the model id is gated by resolveGeminiModel so the fixed upstream URL
+ * below cannot become an SSRF primitive.
+ *
+ * Also serves the shared voice tool schemas (GET /api/voice/tools): the
+ * same GEV_REALTIME_TOOLS array the OpenAI session uses, so the Gemini Live
+ * client offers identical capabilities with zero schema drift by
+ * construction. Schemas are public interface, no key needed.
+ */
+export function geminiFreeProxy() {
+  function install(middlewares) {
+    middlewares.use('/api/gemini/ask', async (req, res) => {
+      const json = (status, payload, retryAfter) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        if (retryAfter) res.setHeader('Retry-After', String(retryAfter));
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'POST') {
+        json(405, { error: 'Method not allowed', answer: null });
+        return;
+      }
+      const apiKey = String(process.env.GEMINI_API_KEY || '').trim();
+      if (!apiKey) {
+        json(503, { error: 'GEMINI_API_KEY is not set', code: 'GEMINI_NOT_CONFIGURED', answer: null });
+        return;
+      }
+      if (!enforceOptInRateLimit(geminiRateLimiter(), req, res)) return;
+
+      let question = '';
+      let contextText = '';
+      try {
+        const parsed = JSON.parse(await readRequestBody(req, 16 * 1024) || '{}');
+        question = String(parsed?.question || '').trim();
+        contextText = String(parsed?.context || '').trim();
+      } catch {
+        json(400, { error: 'Malformed JSON body', answer: null });
+        return;
+      }
+      if (!question) {
+        json(400, { error: 'Missing question', answer: null });
+        return;
+      }
+      const model = resolveGeminiModel(process.env.GEMINI_MODEL);
+      // Search grounding for current facts (free tier: 500 RPD shared with
+      // Flash-Lite). Default on — voice Q&A is exactly the use case;
+      // GEMINI_SEARCH_GROUNDING=0 restores pure-training answers.
+      const groundSearch = String(process.env.GEMINI_SEARCH_GROUNDING || '').trim() !== '0';
+      const { body } = buildGeminiRequest({ question, contextText, model, groundSearch });
+      let upstream;
+      try {
+        upstream = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+          {
+            method: 'POST',
+            redirect: 'manual',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': apiKey,
+            },
+            body: JSON.stringify(body),
+          },
+        );
+      } catch (error) {
+        json(502, { error: `Gemini request failed: ${String(error?.message || error).slice(0, 120)}`, answer: null });
+        return;
+      }
+      if (upstream.status >= 300 && upstream.status < 400) {
+        try { await upstream.body?.cancel?.(); } catch { /* no-op */ }
+        json(502, { error: 'Gemini redirects are refused', answer: null });
+        return;
+      }
+      if (upstream.status === 429) {
+        try { await upstream.body?.cancel?.(); } catch { /* no-op */ }
+        json(429, { error: 'Gemini free quota exhausted — try again in a minute', retryable: true, answer: null }, 60);
+        return;
+      }
+      let data;
+      try {
+        data = JSON.parse(await readResponseTextCapped(upstream, GEMINI_MAX_RESPONSE_BYTES));
+      } catch {
+        json(502, { error: 'Gemini response too large or unreadable', answer: null });
+        return;
+      }
+      if (!upstream.ok) {
+        const detail = String(data?.error?.message || '').slice(0, 200);
+        json(502, { error: detail ? `Gemini error: ${detail}` : `Gemini returned ${upstream.status}`, answer: null });
+        return;
+      }
+      const { text, blocked, reason } = extractGeminiAnswerText(data);
+      if (!text) {
+        json(200, { answer: null, blocked: true, error: `Gemini gave no answer (${reason})` });
+        return;
+      }
+      json(200, { answer: text.slice(0, 1200), blocked: false, error: null });
+    });
+
+    middlewares.use('/api/gemini/see', async (req, res) => {
+      const json = (status, payload, retryAfter) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        if (retryAfter) res.setHeader('Retry-After', String(retryAfter));
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'POST') {
+        json(405, { error: 'Method not allowed', answer: null });
+        return;
+      }
+      const apiKey = String(process.env.GEMINI_API_KEY || '').trim();
+      if (!apiKey) {
+        json(503, { error: 'GEMINI_API_KEY is not set', code: 'GEMINI_NOT_CONFIGURED', answer: null });
+        return;
+      }
+      if (!enforceOptInRateLimit(geminiRateLimiter(), req, res)) return;
+
+      let image = '';
+      let mimeType = 'image/jpeg';
+      let question = '';
+      let contextText = '';
+      try {
+        const parsed = JSON.parse(await readRequestBody(req, 512 * 1024) || '{}');
+        image = String(parsed?.image || '').replace(/^data:[^,]*,/, '').slice(0, GEMINI_SEE_MAX_IMAGE_BYTES * 2);
+        mimeType = String(parsed?.mimeType || 'image/jpeg');
+        question = String(parsed?.question || '').trim();
+        contextText = String(parsed?.context || '').trim();
+      } catch {
+        json(400, { error: 'Malformed JSON body', answer: null });
+        return;
+      }
+      if (!image) {
+        json(400, { error: 'Missing image', answer: null });
+        return;
+      }
+      if (!/^[A-Za-z0-9+/=]+$/.test(image) || image.length % 4 !== 0) {
+        json(400, { error: 'Image is not valid base64', answer: null });
+        return;
+      }
+      const model = resolveGeminiModel(process.env.GEMINI_SEE_MODEL || process.env.GEMINI_MODEL);
+      const { body } = buildSeeRequest({ imageBase64: image, mimeType, question, contextText, model });
+      let upstream;
+      try {
+        upstream = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+          {
+            method: 'POST',
+            redirect: 'manual',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': apiKey,
+            },
+            body: JSON.stringify(body),
+          },
+        );
+      } catch (error) {
+        json(502, { error: `Gemini see request failed: ${String(error?.message || error).slice(0, 120)}`, answer: null });
+        return;
+      }
+      if (upstream.status >= 300 && upstream.status < 400) {
+        try { await upstream.body?.cancel?.(); } catch { /* no-op */ }
+        json(502, { error: 'Gemini redirects are refused', answer: null });
+        return;
+      }
+      if (upstream.status === 429) {
+        try { await upstream.body?.cancel?.(); } catch { /* no-op */ }
+        json(429, { error: 'Gemini free quota exhausted — try again in a minute', retryable: true, answer: null }, 60);
+        return;
+      }
+      let data;
+      try {
+        data = JSON.parse(await readResponseTextCapped(upstream, GEMINI_MAX_RESPONSE_BYTES));
+      } catch {
+        json(502, { error: 'Gemini see response too large or unreadable', answer: null });
+        return;
+      }
+      if (!upstream.ok) {
+        const detail = String(data?.error?.message || '').slice(0, 200);
+        json(502, { error: detail ? `Gemini see error: ${detail}` : `Gemini see returned ${upstream.status}`, answer: null });
+        return;
+      }
+      const seen = extractGeminiAnswerText(data);
+      if (!seen.text) {
+        json(200, { answer: null, blocked: true, error: `Gemini described nothing (${seen.reason})` });
+        return;
+      }
+      json(200, { answer: seen.text.slice(0, 1200), blocked: false, error: null });
+    });
+
+    middlewares.use('/api/gemini/tts', async (req, res) => {
+      const json = (status, payload, retryAfter) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        if (retryAfter) res.setHeader('Retry-After', String(retryAfter));
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'POST') {
+        json(405, { error: 'Method not allowed', audio: null });
+        return;
+      }
+      const apiKey = String(process.env.GEMINI_API_KEY || '').trim();
+      if (!apiKey) {
+        json(503, { error: 'GEMINI_API_KEY is not set', code: 'GEMINI_NOT_CONFIGURED', audio: null });
+        return;
+      }
+      if (!enforceOptInRateLimit(geminiRateLimiter(), req, res)) return;
+
+      let text = '';
+      try {
+        const parsed = JSON.parse(await readRequestBody(req, 4 * 1024) || '{}');
+        text = String(parsed?.text || '').trim().slice(0, 500);
+      } catch {
+        json(400, { error: 'Malformed JSON body', audio: null });
+        return;
+      }
+      if (!text) {
+        json(400, { error: 'Missing text', audio: null });
+        return;
+      }
+      const voice = resolveGeminiVoice(process.env.GEMINI_TTS_VOICE);
+      const { model, body } = buildGeminiTTSRequest({ text, voice });
+      // GEMINI_TTS_MODEL override passes through the same strict gate as the
+      // Q&A model so the fixed upstream URL cannot become an SSRF primitive.
+      const configuredTts = String(process.env.GEMINI_TTS_MODEL || '').trim();
+      const ttsModel = isValidGeminiModel(configuredTts) ? configuredTts : model;
+      let upstream;
+      try {
+        upstream = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${ttsModel}:generateContent`,
+          {
+            method: 'POST',
+            redirect: 'manual',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': apiKey,
+            },
+            body: JSON.stringify(body),
+          },
+        );
+      } catch (error) {
+        json(502, { error: `Gemini TTS request failed: ${String(error?.message || error).slice(0, 120)}`, audio: null });
+        return;
+      }
+      if (upstream.status >= 300 && upstream.status < 400) {
+        try { await upstream.body?.cancel?.(); } catch { /* no-op */ }
+        json(502, { error: 'Gemini redirects are refused', audio: null });
+        return;
+      }
+      if (upstream.status === 429) {
+        try { await upstream.body?.cancel?.(); } catch { /* no-op */ }
+        json(429, { error: 'Gemini free quota exhausted — try again in a minute', retryable: true, audio: null }, 60);
+        return;
+      }
+      let data;
+      try {
+        data = JSON.parse(await readResponseTextCapped(upstream, GEMINI_MAX_TTS_BYTES));
+      } catch {
+        json(502, { error: 'Gemini TTS response too large or unreadable', audio: null });
+        return;
+      }
+      if (!upstream.ok) {
+        const detail = String(data?.error?.message || '').slice(0, 200);
+        json(502, { error: detail ? `Gemini TTS error: ${detail}` : `Gemini TTS returned ${upstream.status}`, audio: null });
+        return;
+      }
+      const { audio, mimeType, blocked, reason } = extractGeminiTTSAudio(data);
+      if (!audio) {
+        json(200, { audio: null, mimeType: null, blocked: true, error: `Gemini TTS gave no audio (${reason})` });
+        return;
+      }
+      json(200, { audio, mimeType, blocked: false, error: null });
+    });
+
+    middlewares.use('/api/gemini/live-token', async (req, res) => {
+      const json = (status, payload, retryAfter) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        if (retryAfter) res.setHeader('Retry-After', String(retryAfter));
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'GET' && req.method !== 'POST') {
+        json(405, { error: 'Method not allowed', token: null });
+        return;
+      }
+      const apiKey = String(process.env.GEMINI_API_KEY || '').trim();
+      if (!apiKey) {
+        json(503, { error: 'GEMINI_API_KEY is not set', code: 'GEMINI_NOT_CONFIGURED', token: null });
+        return;
+      }
+      if (!enforceOptInRateLimit(geminiRateLimiter(), req, res)) return;
+
+      // The token is single-use and short-lived; the browser uses it once to
+      // open exactly one Live session, so a leaked token buys an attacker
+      // minutes, not the key. Model/voice resolution stays server-side.
+      const liveModel = resolveGeminiLiveModel(process.env.GEMINI_LIVE_MODEL);
+      const liveVoice = resolveGeminiVoice(process.env.GEMINI_LIVE_VOICE);
+      let upstream;
+      try {
+        upstream = await fetch('https://generativelanguage.googleapis.com/v1beta/auth_tokens', {
+          method: 'POST',
+          redirect: 'manual',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey,
+          },
+          body: JSON.stringify(buildLiveTokenRequest()),
+        });
+      } catch (error) {
+        json(502, { error: `Gemini token request failed: ${String(error?.message || error).slice(0, 120)}`, token: null });
+        return;
+      }
+      if (upstream.status >= 300 && upstream.status < 400) {
+        try { await upstream.body?.cancel?.(); } catch { /* no-op */ }
+        json(502, { error: 'Gemini redirects are refused', token: null });
+        return;
+      }
+      let data;
+      try {
+        data = JSON.parse(await readResponseTextCapped(upstream, 8 * 1024));
+      } catch {
+        json(502, { error: 'Gemini token response unreadable', token: null });
+        return;
+      }
+      if (!upstream.ok || typeof data?.name !== 'string' || !data.name) {
+        if (upstream.status === 429) {
+          json(429, { error: 'Gemini quota exhausted — try again in a minute', retryable: true, token: null }, 60);
+          return;
+        }
+        const detail = String(data?.error?.message || '').slice(0, 200);
+        json(502, { error: detail ? `Gemini token error: ${detail}` : `Gemini token returned ${upstream.status}`, token: null });
+        return;
+      }
+      json(200, { token: data.name, model: liveModel, voice: liveVoice, error: null });
+    });
+
+    middlewares.use('/api/voice/tools', async (req, res) => {      if (req.method !== 'GET') {
+        res.statusCode = 405;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(JSON.stringify({ tools: GEV_REALTIME_TOOLS, count: GEV_REALTIME_TOOLS.length }));
+    });
+
+    // Chat-history mirror for the in-app voice log (LOG drawer): appends turns
+    // to .gev-logs/voice-conversations.jsonl next to the realtime debug log.
+    // Localhost dev loopback only in practice (same server that serves the app).
+    middlewares.use('/api/voice/log', async (req, res) => {
+      const json = (status, payload) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'POST') {
+        json(405, { error: 'Method not allowed' });
+        return;
+      }
+      try {
+        const parsed = JSON.parse(await readRequestBody(req, 64 * 1024) || '{}');
+        const entries = Array.isArray(parsed?.entries) ? parsed.entries.slice(0, 20) : [];
+        if (entries.length) {
+          fs.mkdirSync(REALTIME_DEBUG_LOG_DIR, { recursive: true });
+          const lines = entries.map((entry) => JSON.stringify({
+            loggedAt: new Date().toISOString(),
+            who: String(entry?.who || 'you').slice(0, 10),
+            text: String(entry?.text || '').slice(0, 500),
+            ...(Array.isArray(entry?.calls) ? { calls: entry.calls.slice(0, 12) } : {}),
+          })).join('\n') + '\n';
+          fs.appendFileSync(path.join(REALTIME_DEBUG_LOG_DIR, 'voice-conversations.jsonl'), lines);
+        }
+        json(200, { ok: true });
+      } catch {
+        json(400, { error: 'Malformed log body' });
+      }
+    });
+  }
+
+  return {
+    name: 'gemini-free-proxy',
+    configureServer(server) {
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
+    },
+  };
 }
 
 function readRequestBody(req, maxBytes = 1024 * 1024) {
@@ -6281,6 +7188,23 @@ const GEV_REALTIME_TOOLS = [
         longitude: { type: 'number', minimum: -180, maximum: 180, description: 'Optional observer longitude. Omit to use the current camera position.' },
         minElevationDeg: { type: 'number', minimum: 5, maximum: 60, description: 'Minimum peak elevation (deg) to count as a pass. Default 10.' },
       },
+    },
+  },
+  {
+    type: 'function',
+    name: 'web_search',
+    description: 'Search the public web for current facts you do not know (populations, events, people, places). Use it whenever a question needs up-to-date or encyclopedic knowledge instead of guessing — then answer from the returned results, never from memory alone.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        query: {
+          type: 'string',
+          maxLength: 200,
+          description: 'Search query, e.g. "largest city by population 2026" or "Charlie Kirk shot location".',
+        },
+      },
+      required: ['query'],
     },
   },
 ];
@@ -7737,9 +8661,20 @@ export default defineConfig(({ mode }) => {
   }
   const env = { ...process.env };
   const localAllowedHosts = ['localhost', '127.0.0.1', '.local'];
+  // Private-remote opt-in (e.g. Tailscale Serve): extra Host names allowed
+  // through Vite's host check WITHOUT widening the bind address. The server
+  // still listens only where HOST says (keep it loopback); the tailnet
+  // reverse-proxy terminates TLS and forwards locally. Provider Settings
+  // keeps refusing non-loopback Hosts independently (see admitKeySetupRequest),
+  // so keys can never be added or read back over the shared name.
+  const extraAllowedHosts = String(env.GEV_ALLOWED_HOSTS || '')
+    .split(',')
+    .map((name) => name.trim().toLowerCase())
+    .filter((name) => name && !/[^\w.:-]/.test(name));
   return {
     plugins: [
       cesium(),
+      pinGateProxy(),
       openSkyProxy(),
       celestrakProxy(),
       tomtomProxy(),
@@ -7756,8 +8691,12 @@ export default defineConfig(({ mode }) => {
       gbfsProxy(),
       adsbLolProxy(),
       aisLiveProxy(),
+      geocodeProxy(),
+      webSearchProxy(),
       trackBackfillProxies(),
       openAiRealtimeProxy(),
+      geminiFreeProxy(),
+      chatBrainsProxy(),
       googlePlacesContextProxy(),
       keySetupEndpoint(),
     ],
@@ -7767,7 +8706,7 @@ export default defineConfig(({ mode }) => {
       // When binding to all interfaces, allow any host; otherwise restrict to local names
       allowedHosts: (env.HOST === '0.0.0.0' || env.HOST === '::')
         ? true
-        : localAllowedHosts,
+        : [...localAllowedHosts, ...extraAllowedHosts],
       fs: {
         // Pinokio keeps optional credentials in this ignored local file.
         deny: ['.env', '.env.*', '*.{crt,pem}', '**/.git/**', '**/ENVIRONMENT'],

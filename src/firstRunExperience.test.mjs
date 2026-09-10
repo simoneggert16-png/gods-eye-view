@@ -660,10 +660,13 @@ test('the voice TOOL SCHEMA is byte-identical to main — the mission mapping is
   // exactly the kind of schema change this pin exists to make loud). The
   // guarded claim is unchanged: first-run missions ride existing tools, and
   // any NEW drift from this recorded schema still fails here.
-  assert.equal(block.length, 31189, 'tool schema byte length drifted from the pinned release schema');
+  // Re-pinned 2026-09-10: adds the web_search tool (public-web facts for the
+  // AI instead of guessed populations/events — same deliberate extension,
+  // reviewed against the mission mapping below, which is untouched).
+  assert.equal(block.length, 31845, 'tool schema byte length drifted from the pinned release schema');
   assert.equal(
     crypto.createHash('sha256').update(block).digest('hex'),
-    '73aaabdb169a5478893d28688f327a21edd32ed3ec16fc6287bd944ed77beecf',
+    'ed6581a3ef59c92184067bd8b5f0a31c4c3fd9680a92bce819357b7de27de6be',
     'the first-run missions must ride EXISTING tools: no schema edit, no cache bust',
   );
 

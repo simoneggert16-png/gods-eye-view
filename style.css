@@ -378,6 +378,211 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   white-space: nowrap;
 }
 
+/* Voice chat history: toggle + scrollable drawer under the pill */
+.gev-chat-toggle {
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 6px 10px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--btn-radius);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.gev-chat-toggle:hover,
+.gev-chat-toggle[aria-expanded='true'] {
+  color: var(--accent);
+  border-color: rgba(0, 212, 255, 0.28);
+}
+
+.gev-chat-log {
+  position: absolute;
+  bottom: calc(100% + 64px);
+  left: 50%;
+  z-index: 3;
+  width: max(340px, 26vw);
+  max-width: 86vw;
+  max-height: 240px;
+  margin: 0;
+  overflow-y: auto;
+  background: rgba(8, 31, 42, 0.94);
+  border: 1px solid rgba(0, 212, 255, 0.28);
+  border-radius: 12px;
+  box-shadow:
+    0 12px 30px rgba(0, 0, 0, 0.56),
+    0 0 26px rgba(0, 212, 255, 0.12);
+  overscroll-behavior: contain;
+  transform: translateX(-50%);
+}
+
+.gev-chat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 10px;
+  list-style: none;
+}
+
+.gev-chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px 0;
+}
+
+.gev-chat-caption {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+}
+
+.gev-chat-copy {
+  padding: 3px 8px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--btn-radius);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.gev-chat-copy:hover {
+  color: var(--accent);
+  border-color: rgba(0, 212, 255, 0.28);
+}
+
+.gev-chat-entry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.gev-chat-entry time {
+  color: var(--text-secondary);
+  font-size: 9px;
+  opacity: 0.8;
+}
+
+.gev-chat-entry strong {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+.gev-chat-you strong {
+  color: #9adcff;
+}
+
+.gev-chat-gemini strong {
+  color: #5cffc6;
+}
+
+.gev-chat-app strong {
+  color: #ffdc78;
+}
+
+.gev-chat-zai strong {
+  color: #ff9d5c;
+}
+
+.gev-chat-ollama strong {
+  color: #c792ea;
+}
+
+.gev-chat-entry span {
+  flex: 1 1 100%;
+  color: var(--text-primary);
+}
+
+.gev-chat-call {
+  padding: 1px 6px;
+  color: #5cffc6;
+  border: 1px solid rgba(92, 255, 198, 0.35);
+  border-radius: 999px;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.gev-chat-call.gev-chat-fail {
+  color: #ff8d9b;
+  border-color: rgba(255, 92, 110, 0.5);
+}
+
+/* Free-voice typed fallback: floating chat bar ABOVE the mic pill (the pill
+   row itself stays untouched — an in-flow form gets crushed by the dock). */
+.gev-voice-text-form {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  z-index: 3;
+  display: flex;
+  gap: 6px;
+  width: max(340px, 26vw);
+  max-width: 86vw;
+  padding: 8px;
+  background: rgba(8, 31, 42, 0.94);
+  border: 1px solid rgba(0, 212, 255, 0.28);
+  border-radius: 12px;
+  box-shadow:
+    0 12px 30px rgba(0, 0, 0, 0.56),
+    0 0 26px rgba(0, 212, 255, 0.12);
+  transform: translateX(-50%);
+}
+
+.gev-voice-text-form input {
+  min-width: 0;
+  flex: 1 1 auto;
+  padding: 6px 9px;
+  overflow: hidden;
+  color: var(--accent);
+  background: rgba(0, 212, 255, 0.05);
+  border: 1px solid rgba(0, 212, 255, 0.22);
+  border-radius: var(--btn-radius);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+}
+
+.gev-voice-text-form input::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.75;
+}
+
+.gev-voice-text-form input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 12px rgba(0, 212, 255, 0.22);
+  outline: none;
+}
+
+.gev-voice-text-form button {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  color: var(--accent);
+  background: rgba(0, 212, 255, 0.06);
+  border: 1px solid rgba(0, 212, 255, 0.28);
+  border-radius: var(--btn-radius);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.gev-voice-text-form button:hover {
+  color: #ffffff;
+  border-color: var(--accent);
+}
+
 #gev-voice-control[data-status='listening'] {
   border-color: rgba(92, 255, 198, 0.45);
 }
@@ -8737,6 +8942,11 @@ body:not(.ui-clean-view):not(.recording-mode):has(#intel-hud[data-variant='minim
   visibility: visible;
   opacity: 1;
   transform: translate(-50%, 0) scale(1);
+}
+
+/* Retired after a few real turns — the operator knows it; stop covering chat. */
+#gev-voice-control[data-help-retired='true'] .gev-voice-help-tray {
+  display: none;
 }
 
 #command-dock.dock-has-pinned-tray .gev-voice-help-tray {
