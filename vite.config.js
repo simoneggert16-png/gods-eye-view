@@ -8703,10 +8703,8 @@ export default defineConfig(({ mode }) => {
     server: {
       host: env.HOST || 'localhost',
       port: parseInt(env.PORT, 10) || 4173,
-      // When binding to all interfaces, allow any host; otherwise restrict to local names
-      allowedHosts: (env.HOST === '0.0.0.0' || env.HOST === '::')
-        ? true
-        : [...localAllowedHosts, ...extraAllowedHosts],
+      // Allow cloud hosts like onrender.com and all interfaces
+      allowedHosts: true,
       fs: {
         // Pinokio keeps optional credentials in this ignored local file.
         deny: ['.env', '.env.*', '*.{crt,pem}', '**/.git/**', '**/ENVIRONMENT'],
@@ -8722,6 +8720,9 @@ export default defineConfig(({ mode }) => {
         'X-Frame-Options': 'DENY',
         'Content-Security-Policy': "frame-ancestors 'none'",
       },
+    },
+    preview: {
+      allowedHosts: true,
     },
     // Expose selected API keys to the browser via import.meta.env.*
     define: {
