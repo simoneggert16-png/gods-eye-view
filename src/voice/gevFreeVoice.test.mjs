@@ -788,6 +788,64 @@ test('failed place flight with satellite words retries as tracking', async () =>
   assert.match(result.speech, /Verfolge|Tracking/);
 });
 
+test('web_search chains one follow-up hop, then acts', async () => {
+  const posted = [];
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    posted.push(body.message || '');
+    if ((body.message || '').includes('Web search results')) {
+      return { ok: true, status: 200, json: async () => ({ answer: '{"name": "fly_to_location", "args": {"latitude": 38.8895, "longitude": -77.0353}, "say": "Fliege zum Monument."}', blocked: false, error: null }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ answer: '{"name": "web_search", "args": {"query": "tallest building Washington DC"}, "say": "Ich suche nach dem höchsten Gebäude."}', blocked: false, error: null }) };
+  };
+  const ran = [];
+  const controller = createFreeVoiceController({
+    announce: false,
+    ui: { detail: { textContent: '' } },
+    fetchImpl,
+    runner: async (name, args) => {
+      if (name === 'get_current_view_state' || name === 'get_entity_context') return { ok: true };
+      ran.push(name);
+      if (name === 'web_search') {
+        return { ok: true, action: name, query: args.query, results: [{ title: 'Washington Monument', snippet: 'Tallest structure in Washington, D.C. at 169 m.', url: 'https://en.wikipedia.org/wiki/Washington_Monument', source: 'Wikipedia' }] };
+      }
+      return { ok: true, action: name };
+    },
+    log: { push: () => {}, list: () => [] },
+  });
+  const result = await controller.handleChatText('show me the tallest building in washington DC');
+  assert.equal(result.ok, true);
+  assert.deepEqual(ran, ['web_search', 'fly_to_location'], 'search first, then act on the result');
+  assert.ok(posted.some((m) => m.includes('169 m')), 'sourced facts reach the follow-up');
+  assert.match(result.speech, /Monument/);
+});
+
+test('web_search follow-up without a second call speaks the top hit', async () => {
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    if ((body.message || '').includes('Web search results')) {
+      return { ok: true, status: 200, json: async () => ({ answer: 'Dazu habe ich leider keine Kartenaktion.', blocked: false, error: null }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ answer: '{"name": "web_search", "args": {"query": "tallest building Washington DC"}}', blocked: false, error: null }) };
+  };
+  const controller = createFreeVoiceController({
+    announce: false,
+    ui: { detail: { textContent: '' } },
+    fetchImpl,
+    runner: async (name) => {
+      if (name === 'get_current_view_state' || name === 'get_entity_context') return { ok: true };
+      if (name === 'web_search') {
+        return { ok: true, action: name, results: [{ title: 'Washington Monument', snippet: 'Tallest structure at 169 m.', url: 'https://example.invalid', source: 'Wikipedia' }] };
+      }
+      return { ok: true, action: name };
+    },
+    log: { push: () => {}, list: () => [] },
+  });
+  const result = await controller.handleChatText('show me the tallest building in washington DC');
+  assert.equal(result.ok, true);
+  assert.match(result.speech, /Washington Monument/);
+});
+
 test('failed regex command gets one AI reinterpretation, never a loop', async () => {
   const posted = [];
   const fetchImpl = async (url, init) => {

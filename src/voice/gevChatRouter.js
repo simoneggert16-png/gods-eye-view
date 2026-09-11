@@ -53,6 +53,7 @@ export const ROUTER_TOOLS = Object.freeze([
   'frame_overhead {target: flights|military|satellites|vessels} — show traffic overhead',
   'fly_route {} — fly the drawn route',
   'next_iss_pass {} — when is the ISS overhead next',
+  'web_search {query} — look up a FACT on the web (tallest building, biggest X, population, events) when you do not reliably know it; you get sourced results back, then make the map call',
 ]);
 
 /** System prompt for routing turns. */
@@ -66,6 +67,8 @@ export const ROUTER_SYSTEM_PROMPT = [
   'SHOW + DRAW COMBOS ("zeig mir X und zeichne es ein", "show me X and mark it"): use ONE annotate_map call with flyTo: true — it flies there AND draws. Always use the canonical English place name as target (e.g. "Frühwarnsystem mit Kuppeln in Australien" -> target "Joint Defence Facility Pine Gap", never a made-up phrase like "Frühwarnsystem bei Jervis Bay"). If you are unsure which place is meant, ask briefly instead of guessing a target.',
   'DEICTIC REFERENCES ("diesen Wald", "dieses Gebäude", "dieser Turm", "dorthin", "dahin", "it", "there"): NEVER geocode the demonstrative word itself. Resolve it from the conversation history (the last mentioned place of that kind — "diesen Wald" after "Schwarzwald" means Schwarzwald) and second from the current scene (camera place, selection, nearby landmarks). If neither names a place, answer briefly that you do not know which one is meant.',
   'For map actions, answer with ONLY a JSON object, no other text: {"name": "<tool>", "args": {...}, "say": "<short confirmation in the user language>"}',
+  'The JSON envelope MUST use exactly the keys "name", "args", "say" — never "tool", "type", or "params". One tool call per answer; the single best tool wins.',
+  'KNOWLEDGE THEN ACT: if a map action needs a FACT you do not reliably know (tallest building somewhere, biggest X, newest event), FIRST call web_search with a short query. You will receive sourced results and then make the map call (fly_to_location with the found coordinates as latitude + longitude, or annotate_map with the canonical name). If you already reliably know the fact AND its coordinates, act directly — never ask the user to wait.',
   '2. QUESTIONS: If the user asks a question (e.g. why something has a strange color, what is visible, why water looks turquoise/cyan vs deep blue, sandbanks, reefs, bathymetry, terrain, mountains, geography, or place facts), answer DIRECTLY IN HELPFUL PLAIN TEXT in the user\'s language (at most 3 short sentences, no JSON).',
   '3. GIBBERISH: Only if an utterance is complete meaningless gibberish with neither an action nor a question, answer exactly: {"unknown": true}',
   'Tools:',
@@ -190,12 +193,19 @@ export function extractRouterCall(answer) {
   if (!parsed || typeof parsed !== 'object') return null;
   if (parsed.unknown === true) return { unknown: true };
   const rawName = typeof parsed.name === 'string' ? parsed.name
-    : (typeof parsed.type === 'string' ? parsed.type : '');
+    : (typeof parsed.type === 'string' ? parsed.type : '')
+      || (typeof parsed.tool === 'string' ? parsed.tool : '');
   if (!/^[a-z_]{3,40}$/.test(rawName)) return null;
-  let args = parsed.args && typeof parsed.args === 'object' && !Array.isArray(parsed.args) ? parsed.args : null;
+  const argsContainer = parsed.args && typeof parsed.args === 'object' && !Array.isArray(parsed.args) ? parsed.args
+    : parsed.params && typeof parsed.params === 'object' && !Array.isArray(parsed.params) ? parsed.params
+      : parsed.parameters && typeof parsed.parameters === 'object' && !Array.isArray(parsed.parameters) ? parsed.parameters
+        : parsed.arguments && typeof parsed.arguments === 'object' && !Array.isArray(parsed.arguments) ? parsed.arguments
+          : null;
+  let args = argsContainer;
   if (!args) {
     // {"type": "track_entity", "query": "X"} → args are the top-level rest.
-    const { name: _name, type: _type, say: _say, unknown: _unknown, ...rest } = parsed;
+    const { name: _name, type: _type, tool: _tool, say: _say, unknown: _unknown, args: _args, params: _params, parameters: _parameters, ...rest } = parsed;
+    void _args; void _params; void _parameters;
     args = rest;
   }
   return { name: rawName, args, say: typeof parsed.say === 'string' ? parsed.say.slice(0, 200) : '' };
@@ -293,7 +303,8 @@ export function isCompleteRouterCall(name, args = {}) {
       return Boolean(str(a.query));
     case 'annotate_map': {
       const list = Array.isArray(a.annotations) ? a.annotations : [];
-      return list.length > 0 || Boolean(str(a.target) || str(a.query) || str(a.location) || str(a.place));
+      // annotateMap itself also accepts a flat args.name as the target.
+      return list.length > 0 || Boolean(str(a.target) || str(a.query) || str(a.location) || str(a.place) || str(a.entity) || str(a.name));
     }
     case 'adjust_camera_zoom':
       return Boolean(str(a.direction));
@@ -330,7 +341,8 @@ export function synthRouterSay(name, args = {}, lang = 'en') {
     if (where) return de ? `Fliege nach ${where}.` : `Flying to ${where}.`;
   }
   if (name === 'annotate_map') {
-    const target = q(a.annotations?.[0]?.target) || q(a.target);
+    // Flat tool/params shapes carry the target in `name`.
+    const target = q(a.annotations?.[0]?.target) || q(a.target) || q(a.query) || q(a.name);
     if (target) return de ? `Zeichne ${target} ein.` : `Marking ${target}.`;
   }
   return de ? 'Verstanden, wird ausgeführt.' : 'On it.';

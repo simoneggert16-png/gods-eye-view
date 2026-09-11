@@ -1161,6 +1161,67 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
   }
 
   /**
+   * Second hop for knowledge-then-act: a brain-routed web_search returned
+   * sourced results — hand them to the SAME brain once so it can make the
+   * map call itself. Bounded to exactly one extra hop (the follow-up
+   * executes directly, never chains again), so this always terminates.
+   * Falls back to speaking the top hit when the brain yields no second call.
+   */
+  async function chainWebSearchFollowUp(endpoint, brainWho, originalText, searchResult, lang = 'en') {
+    const de = lang === 'de';
+    const results = Array.isArray(searchResult?.results) ? searchResult.results.slice(0, 3) : [];
+    if (!results.length) return null;
+    const resultBlock = results
+      .map((r, i) => `${i + 1}. ${r.title} — ${r.snippet} (${r.source || 'web'})`)
+      .join('\n');
+    const message = `The user asked: "${String(originalText || '').slice(0, 300)}"\n\nWeb search results for "${String(searchResult?.query || '').slice(0, 120)}":\n${resultBlock}\n\nNow answer with ONLY the map-tool JSON (same envelope as before) that fulfills the request, or a short direct answer.`;
+    let data = null;
+    try {
+      const response = await doFetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, system: ROUTER_SYSTEM_PROMPT }),
+      });
+      if (response && response.status !== 503) data = await response?.json?.().catch(() => null);
+    } catch {
+      data = null;
+    }
+    const follow = (name, args, say) => {
+      logTurn(brainWho, say);
+      return executeCalls([{ name, args }], say, lang, { routed: true });
+    };
+    const routed = extractRouterCall(data?.answer);
+    if (routed && routed.name && routed.name !== 'web_search' && isCompleteRouterCall(routed.name, routed.args)) {
+      return follow(routed.name, routed.args, routed.say || synthRouterSay(routed.name, routed.args, lang));
+    }
+    const degenerate = routed?.name ? null : extractDegenerateRouterCall(data?.answer);
+    if (degenerate && degenerate.name !== 'web_search' && isCompleteRouterCall(degenerate.name, degenerate.args)) {
+      return follow(degenerate.name, degenerate.args, synthRouterSay(degenerate.name, degenerate.args, lang));
+    }
+    // Honest fallback: speak the top hit instead of silence.
+    const top = results[0];
+    const speech = top ? `${top.title}: ${top.snippet}`.slice(0, 280)
+      : (de ? 'Die Suche brachte keine verwertbaren Fakten.' : 'The search brought no usable facts.');
+    state.lastResult = { ok: true, speech, answer: speech };
+    setDetail(speech);
+    speak(speech, lang);
+    logTurn(brainWho, speech);
+    return state.lastResult;
+  }
+
+  /**
+   * After a brain-routed web_search executed with results, give the same
+   * brain its one follow-up hop. Returns the chained result, or null when
+   * no chaining applies (caller returns the first result as-is).
+   */
+  async function maybeChainWebSearch(endpoint, brainWho, originalText, routedName, firstResult, lang = 'en') {
+    if (routedName !== 'web_search' || !doFetch) return null;
+    const wsOutcome = firstResult?.outcomes?.[0];
+    if (!wsOutcome?.ok || !Array.isArray(wsOutcome.result?.results) || !wsOutcome.result.results.length) return null;
+    return chainWebSearchFollowUp(endpoint, brainWho, originalText, wsOutcome.result, lang);
+  }
+
+  /**
    * Open typed questions walk the brain chain: Z.AI GLM first (new + cheap),
    * then Ollama Cloud, then Gemini. The first configured brain answers.
    */
@@ -1231,12 +1292,13 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
           const routed = extractRouterCall(data?.answer);
           if (routed && routed.name && isCompleteRouterCall(routed.name, routed.args)) {
             logTurn(brain.who, routed.say || text);
-            return executeCalls(
+            const first = await executeCalls(
               [{ name: routed.name, args: routed.args }],
               routed.say || text,
               lang,
               { routed: true },
             );
+            return (await maybeChainWebSearch(brain.endpoint, brain.who, text, routed.name, first, lang)) || first;
           }
           // Degenerate pseudo-format ("fly_to_location {...}", bare tool +
           // JSON): synthesize the call with a clean confirmation instead of
@@ -1245,12 +1307,13 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
           if (degenerate && isCompleteRouterCall(degenerate.name, degenerate.args)) {
             const say = synthRouterSay(degenerate.name, degenerate.args, lang);
             logTurn(brain.who, say);
-            return executeCalls(
+            const first = await executeCalls(
               [{ name: degenerate.name, args: degenerate.args }],
               say,
               lang,
               { routed: true },
             );
+            return (await maybeChainWebSearch(brain.endpoint, brain.who, text, degenerate.name, first, lang)) || first;
           }
           // Direct answers to questions (visual phenomena, geography, colors, etc.) from the model.
           const direct = extractDirectAnswer(data?.answer);
@@ -1621,8 +1684,10 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       if (!routed || routed.unknown) continue; // chit-chat stays honest, next brain may still map it
       if (!routed.name || !isCompleteRouterCall(routed.name, routed.args)) continue; // empty-args envelope
       if (excluded.has(stableActionKey(routed.name, routed.args))) continue; // never loop the same dead call
-      const say = routed.say || '';
-      return executeCalls([{ name: routed.name, args: routed.args }], say, lang, { routed: true });
+      const say = routed.say || synthRouterSay(routed.name, routed.args, lang);
+      const first = await executeCalls([{ name: routed.name, args: routed.args }], say, lang, { routed: true });
+      const chained = await maybeChainWebSearch(endpoint, endpoint.includes('/zai/') ? 'zai' : 'ollama', rawText, routed.name, first, lang);
+      return chained || first;
     }
     return null;
   }

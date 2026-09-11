@@ -44,7 +44,7 @@ test('extractDirectAnswer extracts plain text, json say/answer, and skips tool c
 test('router prompt carries the tool menu', () => {
   assert.ok(ROUTER_SYSTEM_PROMPT.includes('fly_to_location'));
   assert.ok(ROUTER_SYSTEM_PROMPT.includes('{"name"'));
-  assert.equal(ROUTER_TOOLS.length, 28, 'router menu covers every voice tool — update with the registry');
+  assert.equal(ROUTER_TOOLS.length, 29, 'router menu covers every voice tool — update with the registry');
   assert.ok(ROUTER_TOOLS.some((line) => line.startsWith('fly_to_location')));
 });
 
@@ -135,8 +135,25 @@ test('router calls survive small-model format drift', () => {
     { name: 'fly_to_location', args: { query: 'Jervis Bay', viewMode: 'close' }, say: '' },
   );
   assert.equal(extractDegenerateRouterCall('just prose, no tool'), null);
-  assert.equal(ROUTER_TOOL_NAMES.length, 28);
+  assert.equal(ROUTER_TOOL_NAMES.length, 29);
   assert.ok(ROUTER_TOOL_NAMES.includes('track_entity'));
+  assert.ok(ROUTER_TOOL_NAMES.includes('web_search'), 'the model can look facts up itself');
+});
+
+test('tool/params envelopes parse like name/args envelopes', () => {
+  assert.deepEqual(
+    extractRouterCall('```json { "tool": "annotate_map", "params": { "type": "area", "name": "Washington Monument", "latitude": 38.8895, "longitude": -77.0353, "flyTo": true } } ```'),
+    {
+      name: 'annotate_map',
+      args: { type: 'area', name: 'Washington Monument', latitude: 38.8895, longitude: -77.0353, flyTo: true },
+      say: '',
+    },
+  );
+  assert.equal(isCompleteRouterCall('annotate_map', { name: 'Washington Monument', latitude: 38.8895 }), true);
+  assert.equal(
+    synthRouterSay('annotate_map', { type: 'area', name: 'Washington Monument' }, 'en'),
+    'Marking Washington Monument.',
+  );
 });
 
 test('incomplete brain calls are rejected before execution', () => {
