@@ -339,6 +339,12 @@ export async function resolveAnnotationTarget({
       // Pure admin: only an admin boundary is correct — never fall back to a
       // building/landuse (a city is never a single building).
       fp = await fetchAdminArea(lat, lon, matchName, scope, signal);
+      if (!fp && placeViewport) {
+        const boxRing = ringFromViewport(placeViewport);
+        if (boxRing) {
+          fp = { ring: boxRing, kind: 'area', heightM: null, synthesized: true };
+        }
+      }
     } else if (scope === 'neighborhood') {
       // FIRST: a bundled neighborhood polygon (reliable, deterministic, OFFLINE — no live
       // Overpass). Covered neighborhoods (e.g. SF: Chinatown/Marina/Mission/Presidio)
@@ -574,6 +580,26 @@ function groundsRadiusFromViewport(viewport) {
   const r = diagM / 2;
   if (!Number.isFinite(r) || r <= 0) return GROUNDS_RADIUS_M;
   return Math.max(GROUNDS_RADIUS_MIN_M, Math.min(GROUNDS_RADIUS_MAX_M, r));
+}
+
+/** Synthesize a closed polygon ring from a lat/lng bounding viewport with subdivided edges. */
+function ringFromViewport(viewport) {
+  const lo = viewport?.low;
+  const hi = viewport?.high;
+  if (!lo || !hi || ![lo.latitude, lo.longitude, hi.latitude, hi.longitude].every(Number.isFinite)) {
+    return null;
+  }
+  const s = lo.latitude;
+  const w = lo.longitude;
+  const n = hi.latitude;
+  const e = hi.longitude;
+  const ring = [];
+  const STEPS = 8;
+  for (let i = 0; i <= STEPS; i++) ring.push([w + (e - w) * (i / STEPS), s]);
+  for (let i = 1; i <= STEPS; i++) ring.push([e, s + (n - s) * (i / STEPS)]);
+  for (let i = 1; i <= STEPS; i++) ring.push([e - (e - w) * (i / STEPS), n]);
+  for (let i = 1; i <= STEPS; i++) ring.push([w, n - (n - s) * (i / STEPS)]);
+  return ring;
 }
 
 function exceedsScopeArea(fp, scope) {
@@ -841,7 +867,7 @@ function adminScopeFromAsk(target, entityKind) {
 
   const ask = String(target || '').trim().toLowerCase();
   if (/\b(?:country|nation)\s+of\s+\S/.test(ask)) return 'country';
-  if (/^(?:the\s+)?state\s+of\s+\S/.test(ask)) return 'state';
+  if (/^(?:the\s+)?(?:state\s+of|bundesstaat)\s+\S/i.test(ask)) return 'state';
   if (/\bcounty\s+of\s+\S/.test(ask) || /\bcounty$/.test(ask)) return 'county';
   return null;
 }

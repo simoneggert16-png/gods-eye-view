@@ -734,6 +734,16 @@ test('highlight and german boundary words annotate the state', () => {
 
   const outline = parseFreeVoiceCommand('Outline the state of Texas.');
   assert.equal(outline.calls[0].args.annotations[0].type, 'area');
+
+  const ze = parseFreeVoiceCommand('zeichne colorado ein');
+  assert.equal(ze.calls[0].name, 'annotate_map');
+  assert.equal(ze.calls[0].args.annotations[0].target, 'colorado');
+  assert.equal(ze.calls[0].args.annotations[0].type, 'area');
+
+  const um = parseFreeVoiceCommand('umrande colorado');
+  assert.equal(um.calls[0].name, 'annotate_map');
+  assert.equal(um.calls[0].args.annotations[0].target, 'colorado');
+  assert.equal(um.calls[0].args.annotations[0].type, 'area');
 });
 
 test('superlative generic places go to the brain, not the geocoder', () => {

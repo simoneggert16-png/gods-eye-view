@@ -113,6 +113,7 @@ function cleanPlace(raw) {
   return String(raw || '')
     .trim()
     .replace(/^(to|nach|the|der|die|das|den|zum|zur|in|im|an|ans|on|onto|at|grenzen von|grenze von|area of|region of)\s+/i, '')
+    .replace(/\s+(?:ein|ab|an|auf)$/i, '')
     .replace(/[?.!…,;]+$/, '')
     .trim()
     .slice(0, 160);
@@ -619,10 +620,11 @@ export function parseFreeVoiceCommand(input) {
 
   // --- Annotate: outline / mark ---------------------------------------------------------
   {
-    const m = text.match(/(?:outline|outlines|draw the|annotate|mark|markiere|zeichne|umriss|grenze von|grenzen von|highlight)\s+(?:the\s+|der\s+|die\s+|das\s+|state of\s+|bundesstaat\s+)?(.{2,120})/);
+    const m = text.match(/(?:outline|outlines|draw the|draw|annotate|mark|markiere|zeichne|umrande|umranden|umriss|grenze von|grenzen von|highlight)\s+(?:the\s+|der\s+|die\s+|das\s+|state of\s+|bundesstaat\s+)?(.{2,120})/);
     if (m && !/route|arrow|distance|entfernung/.test(text)) {
       const target = cleanPlace(m[1]);
-      const isBoundary = /\b(state of|bundesstaat|outline|umriss|umrisse|grenze|grenzen|boundary|border)\b/.test(text);
+      const isBoundary = /\b(state of|bundesstaat|outline|umriss|umrisse|umrande|umranden|grenze|grenzen|boundary|border|einzeichnen)\b/i.test(text)
+        || /\bzeichne\b.*\bein\b/i.test(text);
       if (target) {
         // Boundary asks name a PLACE with border words attached ("texas
         // border") — strip them so the resolver geocodes the place itself.
@@ -638,7 +640,10 @@ export function parseFreeVoiceCommand(input) {
         }
         return {
           calls: [{ name: 'annotate_map', args }],
-          speech: say(`Marking ${resolvedTarget}.`, `Markiere ${resolvedTarget}.`),
+          speech: say(
+            isBoundary ? `Drawing outline of ${resolvedTarget}.` : `Marking ${resolvedTarget}.`,
+            isBoundary ? `Zeichne ${resolvedTarget} ein.` : `Markiere ${resolvedTarget}.`,
+          ),
           lang,
         };
       }
