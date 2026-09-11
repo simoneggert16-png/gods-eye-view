@@ -532,7 +532,8 @@ export class GevRealtimeController {
     if (!window.RTCPeerConnection || !navigator.mediaDevices?.getUserMedia) {
       this.setStatus('idle', 'Microphone requires HTTPS or localhost');
       try {
-        if (this.ui?.detail) this.ui.detail.textContent = 'MIC NEEDS HTTPS OR LOCALHOST · USE CHAT';
+        const isLan = typeof location !== 'undefined' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1';
+        if (this.ui?.detail) this.ui.detail.textContent = isLan ? 'USE LOCALHOST:4173 (MIC)' : 'MIC NEEDS HTTPS';
         const drawer = this.ui?.root?.querySelector('[data-gev-chat-log]');
         const toggle = this.ui?.root?.querySelector('[data-gev-chat-toggle]');
         if (drawer && drawer.hidden) {

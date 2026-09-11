@@ -721,7 +721,8 @@ export function createGeminiLiveController({
         const captured = await startMic((message) => sendJson(message)).catch(() => ({ ok: false }));
         if (!captured?.ok) {
           // Voice dialog needs the mic; typed text still works via sendText.
-          setDetail('LIVE — NO MIC · TYPE INSTEAD');
+          const isLan = typeof location !== 'undefined' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1';
+          setDetail(isLan ? 'USE LOCALHOST:4173 (MIC)' : 'LIVE — NO MIC · TYPE INSTEAD');
         }
       }
       return { ok: true };
