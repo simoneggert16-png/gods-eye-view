@@ -109,13 +109,20 @@ async function init() {
         document.body.appendChild(el);
         return el;
       })(),
-      msaaSamples: 4,
+      msaaSamples: 2,
       contextOptions: {
         webgl: {
           preserveDrawingBuffer: true,
+          powerPreference: 'high-performance',
         },
       },
     });
+
+    // High-DPI performance optimization: clamp resolutionScale so 1.25x-2x display
+    // scaling does not force the GPU to rasterize millions of redundant pixels.
+    if (typeof window !== 'undefined' && window.devicePixelRatio) {
+      viewer.resolutionScale = Math.min(1.0, 1.0 / window.devicePixelRatio);
+    }
 
     // Cap the default render loop at 60 fps. Cesium's loop otherwise runs at
     // the display's refresh rate — 120 Hz on ProMotion panels — doubling GPU
@@ -155,6 +162,18 @@ async function init() {
     });
     const tileset = photoreal.tileset;
     if (tileset) {
+      // 3D Tiles performance tuning:
+      // 1. maximumScreenSpaceError = 24 (streamlined polygon LOD, drastically smoother pans than 16)
+      // 2. cullRequestsWhileMoving = true (drop out-of-view tile requests during movement)
+      // 3. skipLevelOfDetail = true (skip intermediate LOD passes when flying)
+      tileset.maximumScreenSpaceError = 24;
+      tileset.maximumMemoryUsage = 512;
+      tileset.cullRequestsWhileMoving = true;
+      tileset.cullRequestsWhileMovingMultiplier = 60.0;
+      tileset.skipLevelOfDetail = true;
+      tileset.baseScreenSpaceError = 1024;
+      tileset.skipScreenSpaceErrorFactor = 16;
+      tileset.skipLevels = 1;
       viewer.scene.primitives.add(tileset);
       // NOTE: Cesium World Terrain intentionally disabled — conflicts with Google 3D Tiles at high zoom.
       // Google Photorealistic 3D Tiles provide their own terrain/elevation.
