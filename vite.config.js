@@ -103,6 +103,7 @@ import {
   ZAI_MAX_RESPONSE_BYTES,
 } from './src/voice/gevZai.js';
 import { pinGateProxy } from './src/pinGateServer.js';
+import { backendSpeedAccelerator } from './scripts/backendAccelerator.mjs';
 
 
 /** Resolve __dirname for ESM context. */
@@ -8677,6 +8678,7 @@ export default defineConfig(({ mode }) => {
     plugins: [
       cesium(),
       pinGateProxy(),
+      backendSpeedAccelerator(),
       openSkyProxy(),
       celestrakProxy(),
       tomtomProxy(),
@@ -8703,7 +8705,7 @@ export default defineConfig(({ mode }) => {
       keySetupEndpoint(),
     ],
     server: {
-      host: env.HOST || 'localhost',
+      host: env.HOST === '0.0.0.0' ? '::' : (env.HOST || '::'),
       port: parseInt(env.PORT, 10) || 4173,
       // Allow cloud hosts like onrender.com and all interfaces
       allowedHosts: true,
