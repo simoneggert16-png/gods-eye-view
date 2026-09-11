@@ -242,7 +242,7 @@ export function createAnnotationEngine({
     // allSettled gives per-item error isolation (one failed item never aborts the batch); the
     // mutation pass below then runs in ORDER, so de-dup, the synchronous live-cap check, and output
     // order are all preserved exactly as the old serial loop had them.
-    const settled = await Promise.allSettled(list.map((spec) => resolveSpec(spec, controller.signal)));
+    const settled = await Promise.allSettled(list.map((spec) => resolveSpec(spec, controller.signal, Boolean(opts.flyTo))));
 
     try {
       for (let i = 0; i < list.length; i += 1) {
@@ -381,7 +381,7 @@ export function createAnnotationEngine({
     };
   }
 
-  async function resolveSpec(spec, signal) {
+  async function resolveSpec(spec, signal, flyTo = false) {
     const type = normalizeType(spec?.type);
     if (type === 'route') {
       const points = Array.isArray(spec.points) ? spec.points : [];
@@ -398,6 +398,7 @@ export function createAnnotationEngine({
           screenX: pt.screenX,
           screenY: pt.screenY,
           footprint: false,
+          flyTo: Boolean(flyTo || spec.flyTo),
           signal,
         });
         if (r) resolvedPts.push(r);
@@ -441,6 +442,7 @@ export function createAnnotationEngine({
         screenX: spec.screenX,
         screenY: spec.screenY,
         footprint: false,
+        flyTo: Boolean(flyTo || spec.flyTo),
         signal,
       });
       const to = await resolveTarget({
@@ -451,6 +453,7 @@ export function createAnnotationEngine({
         screenX: spec.toScreenX,
         screenY: spec.toScreenY,
         footprint: false,
+        flyTo: Boolean(flyTo || spec.flyTo),
         signal,
       });
       if (!from || !to) {
@@ -484,6 +487,7 @@ export function createAnnotationEngine({
       // PROGRESSIVE resolution: anchor now (~100-400 ms Places/Geocode), outline later.
       // For 'area' marks, resolve eagerly so no temporary pin flashes before outline drapes:
       deferFootprint: wantFootprint,
+      flyTo: Boolean(flyTo || spec.flyTo),
       signal,
     });
   }

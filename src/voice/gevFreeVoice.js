@@ -631,7 +631,7 @@ export function parseFreeVoiceCommand(input) {
         const resolvedTarget = isBoundary
           ? target.replace(/\b(state of|bundesstaat|borders?|grenzen?( von)?|grenze( von)?|boundary|umrisse?)\b/gi, ' ').replace(/\s+/g, ' ').trim() || target
           : target;
-        const args = { annotations: [{ type: isBoundary ? 'area' : 'pin', target: resolvedTarget }], flyTo: false, persist: true };
+        const args = { annotations: [{ type: isBoundary ? 'area' : 'pin', target: resolvedTarget }], flyTo: true, persist: true };
         if (hasReferenceWords(resolvedTarget)) {
           return toBrain(
             [{ name: 'annotate_map', args }],

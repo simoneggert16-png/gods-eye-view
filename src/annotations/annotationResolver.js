@@ -91,7 +91,7 @@ function linkAbort(controller, externalSignal) {
  */
 export async function resolveAnnotationTarget({
   viewer, target, latitude, longitude, footprint = false, intent = 'the_thing',
-  entityKind = null, labelHint = null, deferFootprint = false, screenX, screenY, signal,
+  entityKind = null, labelHint = null, deferFootprint = false, screenX, screenY, flyTo = false, signal,
 }) {
   let lon = Number(longitude);
   let lat = Number(latitude);
@@ -113,7 +113,8 @@ export async function resolveAnnotationTarget({
   const trace = { query: String(target || '').trim(), places: 'skipped', geocode: 'none', osmSnap: 'skipped' };
   // Guard bypass is an ASK-SIDE fact. A returned admin type can be a wrong match
   // ("the Texas Capitol" → the state), so geocode types must never grant it.
-  const bypassNearViewGuards = Boolean(adminScopeFromAsk(target, entityKind));
+  const isIslandAsk = /\b(?:island|islet|isle|archipelago|insel|inseln)\b/i.test(String(target || ''));
+  const bypassNearViewGuards = Boolean(flyTo || isIslandAsk || adminScopeFromAsk(target, entityKind));
 
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
     const query = String(target || '').trim();
@@ -337,9 +338,8 @@ export async function resolveAnnotationTarget({
       // grounds" as around_the_thing, but the grounds ARE the thing — the real enclosing
       // polygon (below) beats a 400 m disc (field test 8's "spherical round one").
       fp = synthesizeBufferedArea(lat, lon, AROUND_LANDMARK_RADIUS_M);
-    } else if (isAdmin) {
-      // Pure admin: only an admin boundary is correct — never fall back to a
-      // building/landuse (a city is never a single building), and never a rectangular bounding box.
+    } else if (isAdmin || isIslandAsk || (placePolygonRing && placePolygonRing.length >= 3 && (scope === 'compound' || scope === 'auto' || geocodeTypes.includes('natural_feature') || geocodeTypes.includes('island')))) {
+      // Pure admin, island, or pre-resolved polygon from geocoder:
       if (placePolygonRing && placePolygonRing.length >= 3) {
         fp = { ring: placePolygonRing, kind: 'area', heightM: null, synthesized: false };
       } else {
@@ -440,7 +440,7 @@ export async function resolveAnnotationTarget({
     // Scope sanity: reject a real footprint whose area is wildly wrong for the asked
     // scope (a building/compound/neighborhood intent must never draw a state-sized
     // blob). Synthesized discs are deliberately sized and exempt.
-    if (fp && !fp.synthesized && Array.isArray(fp.ring) && fp.ring.length >= 3 && exceedsScopeArea(fp, scope)) {
+    if (fp && !fp.synthesized && Array.isArray(fp.ring) && fp.ring.length >= 3 && !isIslandAsk && exceedsScopeArea(fp, scope)) {
       fp = null;
     }
     if (isRateLimitedOutcome(fp)) return fp;
@@ -759,6 +759,7 @@ export function nominatimRowToPlace(row) {
   else if (cls === 'aeroway') types = ['airport'];
   else if (kind === 'stadium') types = ['stadium'];
   else if (kind === 'university' || kind === 'college') types = ['university'];
+  else if (['island', 'islet', 'archipelago'].includes(kind)) types = ['island', 'natural_feature', 'political'];
   else types = [];
   let viewport = null;
   const bbox = Array.isArray(row?.bbox) ? row.bbox.map(Number) : [];
@@ -914,13 +915,14 @@ function scopeFromTypes(types) {
 function adminScopeFromAsk(target, entityKind) {
   if (typeof entityKind === 'string' && entityKind.trim()) {
     const kind = entityKind.trim().toLowerCase();
-    return kind === 'country' || kind === 'state' || kind === 'county' ? kind : null;
+    return kind === 'country' || kind === 'state' || kind === 'county' || kind === 'island' ? kind : null;
   }
 
   const ask = String(target || '').trim().toLowerCase();
   if (/\b(?:country|nation)\s+of\s+\S/.test(ask)) return 'country';
   if (/^(?:the\s+)?(?:state\s+of|bundesstaat)\s+\S/i.test(ask)) return 'state';
   if (/\bcounty\s+of\s+\S/.test(ask) || /\bcounty$/.test(ask)) return 'county';
+  if (/\b(?:island|islet|isle|archipelago|insel|inseln)\b/i.test(ask)) return 'island';
   return null;
 }
 

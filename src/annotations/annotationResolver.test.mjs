@@ -388,4 +388,52 @@ test('nominatim rows map onto the geocodePlace shape (twin of locations.js)', ()
   assert.equal(nominatimRowToPlace(null), null);
   assert.equal(nominatimRowToPlace({ lat: 'north', lon: 0 }), null);
   assert.equal(nominatimRowToPlace({ lat: 95, lon: 0 }), null);
+
+  const islet = nominatimRowToPlace({
+    lat: 18.3004, lon: -64.8262, label: 'Little Saint James Island, Virgin Islands',
+    bbox: ['18.29', '18.31', '-64.83', '-64.82'],
+    placeClass: 'place', placeType: 'islet', addressType: 'islet',
+    geojson: {
+      type: 'Polygon',
+      coordinates: [[[-64.83, 18.29], [-64.82, 18.29], [-64.82, 18.31], [-64.83, 18.31], [-64.83, 18.29]]],
+    },
+  });
+  assert.equal(islet.lat, 18.3004);
+  assert.equal(islet.primaryName, 'Little Saint James Island');
+  assert.deepEqual(islet.types, ['island', 'natural_feature', 'political']);
+  assert.ok(Array.isArray(islet.ring) && islet.ring.length === 5);
+});
+
+test('ask-side bypass: island ask and flyTo both bypass near-view proximity gate', async (t) => {
+  const calls = [];
+  installGoogleMocks(t, async (url) => {
+    calls.push(String(url));
+    if (String(url).startsWith('https://maps.googleapis.com/')) {
+      return { json: async () => geocodePayload({
+        lat: 18.3004,
+        lon: -64.8262,
+        types: ['natural_feature', 'establishment'],
+        label: 'Little Saint James Island, USVI',
+      }) };
+    }
+    return { ok: true, json: async () => ({ places: [] }) };
+  });
+
+  // 1. Island ask wording "Epsteins Insel" bypasses near-view guards
+  const resolvedIsland = await resolveAnnotationTarget({
+    viewer: closeViewportViewer(),
+    target: 'Epsteins Insel',
+  });
+  assert.ok(resolvedIsland, 'island wording keeps its far centroid');
+  assert.equal(resolvedIsland.source, 'geocode');
+  assert.deepEqual([resolvedIsland.lat, resolvedIsland.lon], [18.3004, -64.8262]);
+
+  // 2. flyTo: true bypasses near-view guards even on bare place names
+  const resolvedFlyTo = await resolveAnnotationTarget({
+    viewer: closeViewportViewer(),
+    target: 'Texas',
+    flyTo: true,
+  });
+  assert.ok(resolvedFlyTo, 'flyTo: true allows navigating to distant locations');
+  assert.equal(resolvedFlyTo.source, 'geocode');
 });

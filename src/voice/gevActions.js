@@ -1019,7 +1019,7 @@ async function annotateMap(annotations, args = {}) {
     // here and removed from the annotate_map schema; the console/demo API still has it.)
     clearPrevious: false,
     persist: args.persist !== false,
-    flyTo: Boolean(args.flyTo),
+    flyTo: args.flyTo !== false,
   });
   // Honesty: surface partial failure explicitly so the agent can tell the user
   // which place(s) it couldn't mark instead of implying everything appeared.

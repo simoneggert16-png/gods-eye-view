@@ -4897,6 +4897,71 @@ function adsbLolProxy() {
  * queue, identifying User-Agent) plus a 24 h in-memory cache so repeated
  * voice commands never touch upstream twice.
  */
+export const GEOCODE_QUERY_DICT = Object.freeze({
+  'epsteins insel': 'Epstein Island',
+  'epstein insel': 'Epstein Island',
+  'epsteins island': 'Epstein Island',
+  'epstein island': 'Little Saint James Island',
+  'little saint james': 'Little Saint James Island',
+  'great saint james': 'Great Saint James Island',
+  'osterinsel': 'Easter Island',
+  'weihnachtsinsel': 'Christmas Island',
+  'falklandinseln': 'Falkland Islands',
+  'galapagosinseln': 'Galapagos Islands',
+  'salomonen': 'Solomon Islands',
+  'salomoninseln': 'Solomon Islands',
+  'marschallinseln': 'Marshall Islands',
+  'marshallinseln': 'Marshall Islands',
+  'kaimaninseln': 'Cayman Islands',
+  'jungferninseln': 'Virgin Islands',
+  'vereinigte staaten': 'United States',
+  'vereinigtes koenigreich': 'United Kingdom',
+  'vereinigtes königreich': 'United Kingdom',
+  'schwarzes meer': 'Black Sea',
+  'rotes meer': 'Red Sea',
+  'mittelmeer': 'Mediterranean Sea',
+  'totes meer': 'Dead Sea',
+  'nordsee': 'North Sea',
+  'ostsee': 'Baltic Sea',
+});
+
+export function getGeocodeQueryFallbacks(query) {
+  const fallbacks = [];
+  const q = String(query || '').trim();
+  if (!q) return fallbacks;
+
+  const lower = q.toLowerCase().replace(/^(?:der|die|das|den|dem|des)\s+/i, '').trim();
+  if (GEOCODE_QUERY_DICT[lower]) fallbacks.push(GEOCODE_QUERY_DICT[lower]);
+
+  const stripped = q.replace(/^(?:der|die|das|den|dem|des)\s+/i, '').replace(/\s+(?:ein|ab|an|auf)$/i, '').trim();
+  if (stripped && stripped.toLowerCase() !== q.toLowerCase()) {
+    if (GEOCODE_QUERY_DICT[stripped.toLowerCase()]) fallbacks.push(GEOCODE_QUERY_DICT[stripped.toLowerCase()]);
+    fallbacks.push(stripped);
+  }
+
+  const english = stripped
+    .replace(/\b([A-ZÄÖÜa-zäöü]+)s\s+(Inseln?|Island)\b/gi, '$1 Island')
+    .replace(/\b([A-ZÄÖÜa-zäöü]+)\s+Insel\b/gi, '$1 Island')
+    .replace(/\b([A-ZÄÖÜa-zäöü]+)\s+Inseln\b/gi, '$1 Islands')
+    .replace(/\bInsel\s+([A-ZÄÖÜa-zäöü]+)\b/gi, '$1 Island')
+    .replace(/\bInsel\s+von\s+([A-ZÄÖÜa-zäöü]+)\b/gi, '$1 Island')
+    .replace(/\b([A-ZÄÖÜa-zäöü]+)insel\b/gi, '$1 Island')
+    .replace(/\b([A-ZÄÖÜa-zäöü]+)inseln\b/gi, '$1 Islands')
+    .replace(/\b([A-ZÄÖÜa-zäöü]+)\s+See\b/gi, 'Lake $1')
+    .replace(/\b([A-ZÄÖÜa-zäöü]+)see\b/gi, 'Lake $1')
+    .replace(/\b([A-ZÄÖÜa-zäöü]+)\s+Fluss\b/gi, '$1 River')
+    .replace(/\b([A-ZÄÖÜa-zäöü]+)\s+Bucht\b/gi, '$1 Bay')
+    .replace(/\b([A-ZÄÖÜa-zäöü]+)\s+Gebirge\b/gi, '$1 Mountains')
+    .replace(/\b([A-ZÄÖÜa-zäöü]+)\s+Berge\b/gi, '$1 Mountains');
+
+  if (english && english.toLowerCase() !== q.toLowerCase()) {
+    if (DICT[english.toLowerCase()]) fallbacks.push(DICT[english.toLowerCase()]);
+    fallbacks.push(english);
+  }
+
+  return [...new Set(fallbacks.filter((f) => f && f.toLowerCase() !== q.toLowerCase()))];
+}
+
 const GEOCODE_CACHE_MS = 24 * 60 * 60 * 1000;
 const GEOCODE_CACHE_MAX = 200;
 const GEOCODE_MAX_RESPONSE_BYTES = 512 * 1024;
@@ -4935,16 +5000,14 @@ function geocodeProxy() {
         res.end(hit.body);
         return;
       }
-      // Share the repo-wide Nominatim throttle (regional brief reverse lookups
-      // use the same queue): at most one upstream request per ~1.1 s, which is
-      // what the Nominatim usage policy asks of us.
-      const task = _nominatimQueue.then(async () => {
+
+      async function fetchNominatimRow(searchQuery) {
         const waitMs = Math.max(0, 1100 - (Date.now() - _nominatimLastRequestAt));
         if (waitMs) await new Promise((resolve) => setTimeout(resolve, waitMs));
         _nominatimLastRequestAt = Date.now();
         const params = new URLSearchParams({
           format: 'jsonv2',
-          q: query,
+          q: searchQuery,
           limit: '1',
           addressdetails: '0',
           'accept-language': 'en',
@@ -4965,23 +5028,49 @@ function geocodeProxy() {
           const rows = JSON.parse(await readResponseTextCapped(upstream, GEOCODE_MAX_RESPONSE_BYTES));
           const row = Array.isArray(rows) ? rows[0] : null;
           if (!row || !Number.isFinite(Number(row?.lat)) || !Number.isFinite(Number(row?.lon))) {
-            return JSON.stringify({ found: false, query });
+            return null;
           }
-          return JSON.stringify({
-            found: true,
-            query,
-            lat: Number(row.lat),
-            lon: Number(row.lon),
-            label: String(row.display_name || query).slice(0, 200),
-            bbox: Array.isArray(row.boundingbox) ? row.boundingbox.map(String).slice(0, 4) : null,
-            placeClass: String(row.class || ''),
-            placeType: String(row.type || ''),
-            addressType: String(row.addresstype || row.type || ''),
-            geojson: row.geojson || null,
-          });
+          return row;
         } finally {
           clearTimeout(timer);
         }
+      }
+
+      // Share the repo-wide Nominatim throttle (regional brief reverse lookups
+      // use the same queue): at most one upstream request per ~1.1 s, which is
+      // what the Nominatim usage policy asks of us.
+      const task = _nominatimQueue.then(async () => {
+        const lowerNorm = query.toLowerCase().replace(/^(?:der|die|das|den|dem|des)\s+/i, '').replace(/\s+(?:ein|ab|an|auf)$/i, '').trim();
+        const preferred = GEOCODE_QUERY_DICT[lowerNorm] || GEOCODE_QUERY_DICT[query.toLowerCase()];
+        let row = null;
+        if (preferred) {
+          row = await fetchNominatimRow(preferred);
+        }
+        if (!row) {
+          row = await fetchNominatimRow(query);
+        }
+        if (!row) {
+          const fallbacks = getGeocodeQueryFallbacks(query);
+          for (const fb of fallbacks) {
+            row = await fetchNominatimRow(fb);
+            if (row) break;
+          }
+        }
+        if (!row) {
+          return JSON.stringify({ found: false, query });
+        }
+        return JSON.stringify({
+          found: true,
+          query,
+          lat: Number(row.lat),
+          lon: Number(row.lon),
+          label: String(row.display_name || query).slice(0, 200),
+          bbox: Array.isArray(row.boundingbox) ? row.boundingbox.map(String).slice(0, 4) : null,
+          placeClass: String(row.class || ''),
+          placeType: String(row.type || ''),
+          addressType: String(row.addresstype || row.type || ''),
+          geojson: row.geojson || null,
+        });
       });
       _nominatimQueue = task.catch(() => null);
       let body;
