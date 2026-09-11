@@ -361,7 +361,14 @@ export function placeQueryVariants(query) {
   if (degs && degs.toLowerCase() !== original.toLowerCase() && !variants.some((v) => v.toLowerCase() === degs.toLowerCase())) {
     variants.push(degs);
   }
-  return variants.filter(Boolean).slice(0, 3);
+  if (/epstein/i.test(original) && /(?:gebäude|gebaeude|bauwerk|haus|tempel|temple|mansion|house|villa|anwesen|building|estate)/i.test(original)) {
+    if (!variants.some((v) => /epstein temple/i.test(v))) variants.push('Epstein temple');
+  }
+  if (/little\s+saint\s+james/i.test(original) && /(?:main\s+house|house|mansion|building|temple|tempel|estate)/i.test(original)) {
+    if (!variants.some((v) => /epstein temple/i.test(v))) variants.push('Epstein temple');
+    if (!variants.some((v) => /little saint james/i.test(v))) variants.push('Little Saint James Island');
+  }
+  return variants.filter(Boolean).slice(0, 4);
 }
 
 /**

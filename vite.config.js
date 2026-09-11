@@ -4898,12 +4898,47 @@ function adsbLolProxy() {
  * voice commands never touch upstream twice.
  */
 export const GEOCODE_QUERY_DICT = Object.freeze({
+  // Epstein Island & buildings
   'epsteins insel': 'Epstein Island',
   'epstein insel': 'Epstein Island',
   'epsteins island': 'Epstein Island',
   'epstein island': 'Little Saint James Island',
   'little saint james': 'Little Saint James Island',
   'great saint james': 'Great Saint James Island',
+  'little saint james island': 'Little Saint James Island',
+  'epstein temple': 'Epstein temple',
+  "epstein's temple": 'Epstein temple',
+  'epsteins temple': 'Epstein temple',
+  'epstein tempel': 'Epstein temple',
+  'epsteins tempel': 'Epstein temple',
+  'epstein gebäude': 'Epstein temple',
+  'epsteins gebäude': 'Epstein temple',
+  'epstein gebaeude': 'Epstein temple',
+  'epsteins gebaeude': 'Epstein temple',
+  'epsteins bekanntes gebäude': 'Epstein temple',
+  'epstein bekanntes gebäude': 'Epstein temple',
+  'epsteins bekanntes gebaeude': 'Epstein temple',
+  'epstein bekanntes gebaeude': 'Epstein temple',
+  'epsteins bekanntes bauwerk': 'Epstein temple',
+  'epstein bekanntes bauwerk': 'Epstein temple',
+  'epstein building': 'Epstein temple',
+  'epsteins building': 'Epstein temple',
+  'epstein house': 'Epstein temple',
+  'epsteins house': 'Epstein temple',
+  'epstein haus': 'Epstein temple',
+  'epsteins haus': 'Epstein temple',
+  'epstein mansion': 'Epstein temple',
+  'epsteins mansion': 'Epstein temple',
+  'epstein villa': 'Epstein temple',
+  'epsteins villa': 'Epstein temple',
+  'epstein anwesen': 'Epstein temple',
+  'epsteins anwesen': 'Epstein temple',
+  'little saint james temple': 'Epstein temple',
+  'little saint james main house': 'Epstein temple',
+  'little saint james house': 'Epstein temple',
+  'little saint james mansion': 'Epstein temple',
+  'little saint james gebäude': 'Epstein temple',
+  'the temple little saint james': 'Epstein temple',
   'osterinsel': 'Easter Island',
   'weihnachtsinsel': 'Christmas Island',
   'falklandinseln': 'Falkland Islands',
@@ -4939,6 +4974,22 @@ export function getGeocodeQueryFallbacks(query) {
     fallbacks.push(stripped);
   }
 
+  // Detect Epstein building queries dynamically
+  if (/epstein/i.test(q) && /(?:gebäude|gebaeude|bauwerk|haus|tempel|temple|mansion|house|villa|anwesen|building|estate)/i.test(q)) {
+    fallbacks.push('Epstein temple');
+  }
+  if (/little\s+saint\s+james/i.test(q) && /(?:main\s+house|house|mansion|building|temple|tempel|estate)/i.test(q)) {
+    fallbacks.push('Epstein temple');
+    fallbacks.push('Little Saint James Island');
+  }
+
+  // Strip sub-building suffix to try parent place if specific building not found
+  const parentPlace = stripped.replace(/\s+(?:main\s+house|main\s+building|mansion|house|residence|temple|tempel|gebäude|gebaeude|bauwerk|palace|tower|center|centre|complex|pavilion)\b/gi, '').trim();
+  if (parentPlace && parentPlace.toLowerCase() !== stripped.toLowerCase()) {
+    if (GEOCODE_QUERY_DICT[parentPlace.toLowerCase()]) fallbacks.push(GEOCODE_QUERY_DICT[parentPlace.toLowerCase()]);
+    fallbacks.push(parentPlace);
+  }
+
   const english = stripped
     .replace(/\b([A-ZÄÖÜa-zäöü]+)s\s+(Inseln?|Island)\b/gi, '$1 Island')
     .replace(/\b([A-ZÄÖÜa-zäöü]+)\s+Insel\b/gi, '$1 Island')
@@ -4955,7 +5006,7 @@ export function getGeocodeQueryFallbacks(query) {
     .replace(/\b([A-ZÄÖÜa-zäöü]+)\s+Berge\b/gi, '$1 Mountains');
 
   if (english && english.toLowerCase() !== q.toLowerCase()) {
-    if (DICT[english.toLowerCase()]) fallbacks.push(DICT[english.toLowerCase()]);
+    if (GEOCODE_QUERY_DICT[english.toLowerCase()]) fallbacks.push(GEOCODE_QUERY_DICT[english.toLowerCase()]);
     fallbacks.push(english);
   }
 
