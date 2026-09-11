@@ -101,6 +101,15 @@ test('place fixes extract a corrected name or honest unknown', () => {  assert.d
   assert.equal(extractPlaceFix(null), null);
 });
 
+test('router prompt routes entities to tracking and show+draw to annotate', () => {
+  assert.ok(ROUTER_SYSTEM_PROMPT.includes('SATGUS'), 'Mark Rober satellite mapping guides Ollama');
+  assert.ok(ROUTER_SYSTEM_PROMPT.includes('track_entity'), 'entity rule names the tool');
+  assert.ok(ROUTER_SYSTEM_PROMPT.includes('never geocode these'), 'satellites/ships/planes stay out of geocode');
+  assert.ok(ROUTER_SYSTEM_PROMPT.includes('Joint Defence Facility Pine Gap'), 'Pine Gap example guides Ollama');
+  assert.ok(ROUTER_SYSTEM_PROMPT.includes('flyTo: true'), 'show+draw combo uses one annotate call');
+  assert.ok(ROUTER_TOOLS.some((line) => line.startsWith('track_entity') && line.includes('SATGUS')));
+});
+
 test('reference words catch pronouns, never real names', () => {
   for (const text of ['seine Insel', 'fliege dorthin', 'track that plane', 'markiere es', 'take me there', 'zeig mir diesen Ort', 'zoome in diesen Wald rein', 'dieses Gebäude', 'dieser Turm']) {
     assert.equal(hasReferenceWords(text), true, text);

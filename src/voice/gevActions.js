@@ -229,6 +229,56 @@ const TRACKABLE_FAMILIES = [
   { layerId: 'satellites', kind: 'satellite' },
 ];
 
+/**
+ * Famous-entity description aliases: colloquial descriptions → the catalog
+ * query that actually matches. Mark Rober's satellite is catalogued as
+ * SATGUS (NORAD 62713) and Hubble as HST — "Mark Rober satellite" matches
+ * no TLE name, so it maps here first. Pure data; first regex hit wins.
+ */
+const TRACKABLE_ALIASES = [
+  { match: /mark\s*rober|sat\s*gus|space\s*selfie|crunchlab/i, query: 'SATGUS', layerId: 'satellites' },
+  { match: /hubble/i, query: 'HST', layerId: 'satellites' },
+  { match: /james\s*webb|\bwebb\b.{0,12}(teleskop|telescope)|jwst/i, query: 'JWST', layerId: 'satellites' },
+  { match: /tiangong|chinesische raumstation|chinese space station/i, query: 'TIANHE', layerId: 'satellites' },
+];
+
+/**
+ * Family hint words: which layer a description points at ("Satellit" →
+ * satellites, "Schiff" → vessels, "Flugzeug" → flights). Used to auto-enable
+ * exactly that layer before searching — voice must never answer "turn it on
+ * yourself" for something it can enable in the same breath.
+ */
+const TRACK_FAMILY_WORDS = [
+  { layerId: 'satellites', re: /\b(satellit(en|es)?|satellite(s)?|satgus|norad|tle|orbit|orbits|raumstation|space station|iss|hst|jwst|tiangong|hubble|webb)\b/i },
+  { layerId: 'ais-live-vessels', re: /\b(schiff(e|es|en)?|ship(s)?|vessel(s)?|boot(e|es|en)?|boat(s)?|tanker|frachter|container|fähre|faehre|ferry|kreuzfahrt|yacht|segel|mmsi)\b/i },
+  { layerId: 'military', re: /\b(militär|militaer|military|kampfjet(s)?|fighter(s)?|bomber|abfangjäger|tarnkappen)\b/i },
+  { layerId: 'flights', re: /\b(flugzeug(e|es|en)?|aircraft|plane(s)?|flieger|jet(s)?|hubschrauber|helicopter|heli|flug\b|flight(s)?|callsign|icao|airline|passagier)\b/i },
+];
+
+/** Enable one track family on demand (same intent pattern as the fires path). */
+async function ensureTrackLayer(dataManager, layerId) {
+  if (!layerId) return false;
+  try {
+    if (dataManager.isEnabled?.(layerId)) return true;
+    if (typeof dataManager._setEnabledWithIntent === 'function') {
+      const intent = dataManager._setEnabledWithIntent(layerId, true, { origin: 'voice' });
+      await intent.promise;
+      if (Number.isInteger(intent.intentEpoch)) {
+        await dataManager._waitForVisibilityIntent?.(layerId, intent.intentEpoch);
+      }
+    } else {
+      await dataManager.setEnabled?.(layerId, true, { origin: 'voice' });
+    }
+  } catch {
+    /* fall through — the checks below report honestly */
+  }
+  try {
+    return Boolean(dataManager.isEnabled?.(layerId));
+  } catch {
+    return false;
+  }
+}
+
 const FRAME_TARGETS = new Map([
   ['flights', 'flights'],
   ['planes', 'flights'],
@@ -1724,7 +1774,22 @@ async function trackEntity(viewer, dataManager, styleManager, args = {}) {
   }
 
   const requested = args.layerId ? normalizeLayerId(args.layerId) : null;
-  const families = TRACKABLE_FAMILIES.filter((family) => !requested || family.layerId === requested);
+  // Description search: famous-entity aliases map colloquial descriptions
+  // onto the catalog query first ("Mark Rober satellite" → SATGUS).
+  let effectQuery = query;
+  let forcedLayer = requested;
+  for (const alias of TRACKABLE_ALIASES) {
+    if (alias.match.test(query)) {
+      effectQuery = alias.query;
+      forcedLayer = alias.layerId;
+      break;
+    }
+  }
+  // Auto-enable the hinted family (satellites are usually off): searching a
+  // disabled layer can never match, and voice enables it in the same breath.
+  const hinted = forcedLayer || TRACK_FAMILY_WORDS.find((f) => f.re.test(query))?.layerId || null;
+  if (hinted) await ensureTrackLayer(dataManager, hinted);
+  const families = TRACKABLE_FAMILIES.filter((family) => !forcedLayer || family.layerId === forcedLayer);
   const skippedDisabled = [];
 
   for (const family of families) {
@@ -1734,7 +1799,7 @@ async function trackEntity(viewer, dataManager, styleManager, args = {}) {
     }
     const module = dataManager.layers.get(family.layerId)?.module;
     if (!module || typeof module.findByQuery !== 'function') continue;
-    const found = module.findByQuery(query);
+    const found = module.findByQuery(effectQuery);
     if (!found) continue;
 
     if (family.kind === 'vessel'
@@ -1777,7 +1842,8 @@ async function trackEntity(viewer, dataManager, styleManager, args = {}) {
   }
 
   const disabledNote = skippedDisabled.length ? ` (disabled layers skipped: ${skippedDisabled.join(', ')})` : '';
-  return { ok: false, action: 'track_entity', query, error: `Nothing matched "${query}"${disabledNote}` };
+  const triedNote = effectQuery !== query ? ` (tried "${effectQuery}")` : '';
+  return { ok: false, action: 'track_entity', query, error: `Nothing matched "${query}"${triedNote}${disabledNote}` };
 }
 
 /** Releases tracking/selection on every entity layer family. */

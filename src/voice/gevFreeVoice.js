@@ -80,6 +80,14 @@ const FREE_VOICE_PRESETS = Object.freeze({
 /** German-only trigger marker: any of these matched → confirm in German. */
 const GERMAN_MARKER = /flieg|bring|mich|nach|zeige|mir|schalte|ein|aus|ansicht|über|nächste|stopp|allein|weg|hin|weltkugel|erdbeben|wärmebild|nachtsicht|kamera|flugzeug|schiff|feuer|verkehr|satellit|globus/i;
 
+/**
+ * Entity-family words: a search verb ("suche", "finde", "find") plus one of
+ * these means track_entity (satellite/ship/aircraft), never place geocode.
+ * Mirror of TRACK_FAMILY_WORDS in gevActions.js — kept local so the pure
+ * parser stays dependency-free.
+ */
+const ENTITY_FAMILY_WORDS = /\b(satellit\w*|satellite\w*|satgus|norad|tle|orbit\w*|raumstation|space station|iss|hst|jwst|tiangong|hubble|webb|schiff\w*|ship\w*|vessel\w*|boot\w*|boat\w*|tanker|frachter|container\w*|fähre|faehre|ferry|kreuzfahrt|yacht|mmsi|flugzeug\w*|aircraft|plane\w*|flieger|jet\w*|hubschrauber|helicopter|heli|flight\w*|callsign|icao|militär\w*|militaer\w*|military|kampfjet\w*|fighter\w*)\b/;
+
 function resolveLayerId(text) {
   for (const [id, re] of FREE_VOICE_LAYERS) {
     if (re.test(text)) return id;
@@ -273,12 +281,21 @@ export function parseFreeVoiceCommand(input) {
   }
 
   // --- Track / stop tracking --------------------------------------------
+  // Search verbs ("suche", "finde", "find") route to entity tracking ONLY
+  // when the query names a trackable family (satellite/ship/aircraft —
+  // "suche den Satelliten von Mark Rober"); plain "suche Berlin" falls
+  // through to the fly_to_location place search below.
   {
-    const m = text.match(/(?:track|follow|verfolge|verfolgen|folge)\s+(.{2,80})/);
+    const m = text.match(/(track|follow|verfolge|verfolgen|folge|suche|suchen|finde|finden|find|locate)\s+(.{2,80})/);
     if (m && !/track.*history|history/.test(text)) {
-      const rawQuery = cleanPlace(m[1]);
+      const verb = m[1];
+      const rawQuery = cleanPlace(m[2]);
+      const verbIsSearch = /\b(suche|suchen|finde|finden|find|locate)\b/.test(verb);
+      const namesEntityFamily = ENTITY_FAMILY_WORDS.test(` ${rawQuery.toLowerCase()} `);
       if (!rawQuery) {
         // empty after clean — fall through
+      } else if (verbIsSearch && !namesEntityFamily && !hasReferenceWords(rawQuery)) {
+        // Place search ("suche Berlin") — handled by the fly block below.
       } else {
         const stripped = rawQuery.replace(/\b(plane|aircraft|flugzeug|ship|schiff)\b/gi, '').trim();
         const query = stripped || rawQuery;
@@ -375,8 +392,11 @@ export function parseFreeVoiceCommand(input) {
   }
 
   // --- Fly to a place ----------------------------------------------------
+  // Search verbs ("suche Berlin", "find Tokyo") are place searches — entity
+  // descriptions ("suche den Satelliten") were already claimed by the track
+  // block above and never reach this branch.
   {
-    const m = text.match(/(?:take me to|fly to|go to|navigate to|bring mich nach|bring mich zu|flieg nach|fliege nach|flieg zum|flieg zur|fliege zum|nimm mich mit nach|geh nach|zeige mir|zeig mir|show me)\s+(.{2,120})/);
+    const m = text.match(/(?:take me to|fly to|go to|navigate to|bring mich nach|bring mich zu|flieg nach|fliege nach|flieg zum|flieg zur|fliege zum|nimm mich mit nach|geh nach|zeige mir|zeig mir|show me)\s+(.{2,120})|(?:suche|suchen|suchst|finde|finden|find|locate)\s+(?:nach\s+|mir\s+)?(.{2,120})/);
     if (m) {
       // Superlative + generic noun ("die Stadt mit den meisten Einwohnern")
       // is a KNOWLEDGE question, not a place — route to the brain, which
@@ -386,7 +406,7 @@ export function parseFreeVoiceCommand(input) {
       if (superlative && genericNoun) {
         return toBrain([], '');
       }
-      const place = cleanPlace(m[1]);
+      const place = cleanPlace(m[1] || m[2]);
       const preset = resolvePreset(` ${place.toLowerCase()} `);
       const args = preset ? { locationId: preset } : { query: place };
       if (place && hasReferenceWords(place)) {
@@ -1415,6 +1435,62 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     return null;
   }
 
+  /**
+   * Second chance for a failed annotation: ask a chat brain to correct the
+   * target (hallucinated phrase → canonical place name) and draw once more.
+   * Returns the replacement result or null when no brain could help.
+   */
+  async function retryAnnotateWithBrain(args, lang = 'en') {
+    const de = lang === 'de';
+    const list = Array.isArray(args?.annotations) ? args.annotations : [];
+    const originalTarget = String(list[0]?.target || args?.target || '').trim();
+    if (!originalTarget || !doFetch) return null;
+    let history = [];
+    try {
+      history = (log?.list?.() || []).slice(-8).map((e) => ({ who: e.who, text: e.text }));
+    } catch { /* route without history */ }
+    const scene = await readContextText();
+    const message = buildPlaceFixMessage(originalTarget, history, scene);
+    for (const endpoint of ['/api/zai/chat', '/api/ollama/chat']) {
+      let response = null;
+      try {
+        response = await doFetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message }),
+        });
+      } catch {
+        response = null;
+      }
+      if (!response || response.status === 503) continue;
+      const data = await response?.json?.().catch(() => null);
+      const fix = extractPlaceFix(data?.answer);
+      if (!fix || fix.unknown || !fix.query) continue;
+      if (fix.query.toLowerCase() === originalTarget.toLowerCase()) continue; // no loop on identical
+      const fixedAnnotations = list.length
+        ? [{ ...list[0], target: fix.query }]
+        : [{ type: 'area', target: fix.query }];
+      let outcome;
+      try {
+        const result = await runner('annotate_map', { ...args, annotations: fixedAnnotations });
+        outcome = { name: 'annotate_map', ok: result?.ok !== false, result };
+      } catch (error) {
+        outcome = { name: 'annotate_map', ok: false, error: error?.message || String(error) };
+      }
+      const speech = outcome.ok
+        ? (de ? `Zeichne ${fix.query} ein.` : `Marking ${fix.query}.`)
+        : (de
+          ? `Auch „${fix.query}“ konnte ich nicht einzeichnen.`
+          : `I could not mark "${fix.query}" either.`);
+      state.lastResult = { ok: outcome.ok, speech, outcomes: [outcome], retriedFrom: originalTarget };
+      setDetail(speech);
+      speak(speech, lang);
+      logTurn('app', speech, [{ name: outcome.name, ok: outcome.ok, ...(outcome.ok ? {} : { error: outcome.error }) }]);
+      return state.lastResult;
+    }
+    return null;
+  }
+
   /** Run tool calls through the runner with speech + log + detail. Shared by
    *  the regex path and the AI router path below. opts.rawText enables the AI
    *  second chance below; opts.routed marks brain-originated calls (no loop). */
@@ -1437,6 +1513,14 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       && outcomes[0].ok === false
       && /not found|no results|ZERO_RESULTS/i.test(String(outcomes[0].error || outcomes[0].result?.error || ''))) {
       const retried = await retryFlyWithBrain(calls[0].args, lang);
+      if (retried) return retried;
+    }
+    // AI second chance: a lone annotate_map that could not place its target
+    // gets one brain-corrected retry (hallucinated phrase → canonical name).
+    if (outcomes.length === 1
+      && outcomes[0].name === 'annotate_map'
+      && outcomes[0].ok === false) {
+      const retried = await retryAnnotateWithBrain(calls[0].args, lang);
       if (retried) return retried;
     }
     // AI reinterpretation: ANY other lone failure gets one brain attempt at

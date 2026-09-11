@@ -427,6 +427,48 @@ test('successful voice tracking stamps and releases the old owner before layer t
   assert.deepEqual(order, ['stamp:satellite', 'release', 'cancel', 'track:25544']);
 });
 
+test('track_entity maps famous descriptions onto catalog queries and auto-enables the layer', async () => {
+  globalThis.window = globalThis.window || { clearTimeout, setTimeout, requestIdleCallback: null };
+  const { viewer, styleManager } = createVoiceNavigationHarness();
+  const seen = [];
+  const satellites = {
+    findByQuery: (q) => {
+      seen.push(q);
+      return q === 'SATGUS'
+        ? { noradId: 62713, name: 'SATGUS', latitude: 10, longitude: 20, altitudeM: 560000 }
+        : null;
+    },
+    trackById: (id) => id === 62713,
+  };
+  const enabled = new Set();
+  const dataManager = {
+    layers: new Map([['satellites', { module: satellites }]]),
+    isEnabled: (id) => enabled.has(id),
+    setEnabled: async (id, value) => { if (value) enabled.add(id); return true; },
+    getAll: () => [],
+  };
+  const runner = createGevActionRunner({ viewer, styleManager, dataManager });
+  const result = await runner('track_entity', { query: 'Mark Rober satellite' });
+  assert.equal(result.ok, true, 'SATGUS must track without a manually enabled layer');
+  assert.deepEqual(seen, ['SATGUS'], 'the description maps onto the catalog name');
+  assert.ok(enabled.has('satellites'), 'the satellites layer auto-enables');
+  assert.equal(result.label, 'SATGUS');
+});
+
+test('track_entity miss names the tried catalog query', async () => {
+  globalThis.window = globalThis.window || { clearTimeout, setTimeout, requestIdleCallback: null };
+  const { viewer, styleManager } = createVoiceNavigationHarness();
+  const dataManager = {
+    layers: new Map([['satellites', { module: { findByQuery: () => null } }]]),
+    isEnabled: () => true,
+    getAll: () => [],
+  };
+  const runner = createGevActionRunner({ viewer, styleManager, dataManager });
+  const result = await runner('track_entity', { query: 'Mark Rober satellite' });
+  assert.equal(result.ok, false);
+  assert.ok(result.error.includes('tried "SATGUS"'), `honest tried-note, got: ${result.error}`);
+});
+
 test('voice Stop Tracking clears all durable tracker IDs even without active trackers', async () => {
   const cleared = [];
   const dormant = { getTrackedInfo: () => null, stopTracking() { throw new Error('must not need active tracking'); } };

@@ -652,6 +652,53 @@ test('indefinite show-me stages the layer instead of geocoding', () => {
   assert.equal(weird.calls[0].name, 'fly_to_location');
 });
 
+test('search verbs route entities to tracking, places to flying', () => {
+  const sat = parseFreeVoiceCommand('Ich suche den Satelliten von Mark Rober');
+  assert.equal(sat.calls[0].name, 'track_entity');
+  assert.match(sat.calls[0].args.query, /mark rober/i);
+
+  const ship = parseFreeVoiceCommand('suche das Schiff Ever Given');
+  assert.equal(ship.calls[0].name, 'track_entity');
+
+  const plane = parseFreeVoiceCommand('find that plane');
+  assert.ok(plane.brainRoute, 'pronoun entity still brain-routes');
+  assert.equal(plane.brainRoute.fallbackCalls[0].name, 'track_entity');
+
+  const berlin = parseFreeVoiceCommand('suche Berlin');
+  assert.equal(berlin.calls[0].name, 'fly_to_location');
+  assert.equal(berlin.calls[0].args.query, 'berlin');
+
+  const tokyo = parseFreeVoiceCommand('find Tokyo');
+  assert.equal(tokyo.calls[0].name, 'fly_to_location');
+  assert.equal(tokyo.calls[0].args.locationId || tokyo.calls[0].args.query, 'tokyo');
+});
+
+test('failed annotation gets one AI-corrected retry', async () => {
+  const fetchImpl = async () => ({
+    ok: true, status: 200,
+    json: async () => ({ answer: '{"query": "Joint Defence Facility Pine Gap"}', blocked: false, error: null }),
+  });
+  const ran = [];
+  const controller = createFreeVoiceController({
+    announce: false,
+    ui: { detail: { textContent: '' } },
+    fetchImpl,
+    runner: async (name, args) => {
+      if (name === 'get_current_view_state' || name === 'get_entity_context') return { ok: true };
+      ran.push(args.annotations?.[0]?.target);
+      if (args.annotations?.[0]?.target !== 'Joint Defence Facility Pine Gap') {
+        return { ok: false, action: name, error: 'Could not place one or more annotations' };
+      }
+      return { ok: true, action: name };
+    },
+    log: { push: () => {}, list: () => [] },
+  });
+  const result = await controller.handleText('zeichne das Frühwarnsystem bei Jervis Bay ein');
+  assert.equal(result.ok, true);
+  assert.deepEqual(ran, ['frühwarnsystem bei jervis bay', 'Joint Defence Facility Pine Gap']);
+  assert.match(result.speech, /Pine Gap/);
+});
+
 test('failed regex command gets one AI reinterpretation, never a loop', async () => {
   const posted = [];
   const fetchImpl = async (url, init) => {

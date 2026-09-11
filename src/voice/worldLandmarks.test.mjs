@@ -49,6 +49,19 @@ test('unknown places return null, never throw', () => {
   assert.equal(normalizeLandmarkText('  Der Eiffelturm rein '), 'eiffelturm');
 });
 
+test('early-warning descriptions resolve to Pine Gap', () => {
+  assert.equal(findWorldLandmark('Pine Gap')?.name, 'Joint Defence Facility Pine Gap');
+  assert.equal(findWorldLandmark('pine gap alice springs')?.name, 'Joint Defence Facility Pine Gap');
+  assert.equal(findWorldLandmark('das Frühwarnsystem in Australien')?.name, 'Joint Defence Facility Pine Gap');
+  assert.equal(findWorldLandmark('Frühwarnsystem in Australien mit den großen Kuppeln')?.name, 'Joint Defence Facility Pine Gap');
+  assert.equal(findWorldLandmark('Raketenfrühwarnung Australien')?.name, 'Joint Defence Facility Pine Gap');
+  const hit = findWorldLandmark('Frühwarnsystem in Australien');
+  assert.deepEqual([hit.lat, hit.lon], [-23.8, 133.7375]);
+  // Single keywords alone must NOT match (needs the full description).
+  assert.equal(findWorldLandmark('Australien'), null);
+  assert.equal(findWorldLandmark('Alice Springs'), null);
+});
+
 test('dict helpers stay consistent with the registry', () => {
   const aliases = worldLandmarkAliasDict();
   assert.equal(aliases['eiffelturm'], 'Eiffel Tower, Paris');

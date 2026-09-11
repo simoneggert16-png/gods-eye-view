@@ -404,6 +404,19 @@ test('nominatim rows map onto the geocodePlace shape (twin of locations.js)', ()
   assert.ok(Array.isArray(islet.ring) && islet.ring.length === 5);
 });
 
+test('backend landmark rows (Pine Gap, no bbox/geojson) still anchor', () => {
+  const pine = nominatimRowToPlace({
+    lat: -23.8, lon: 133.7375, label: 'Joint Defence Facility Pine Gap',
+    bbox: null, placeClass: 'building', placeType: 'place', addressType: 'place',
+    geojson: null, landmark: true,
+  });
+  assert.equal(pine.lat, -23.8);
+  assert.equal(pine.lon, 133.7375);
+  assert.equal(pine.primaryName, 'Joint Defence Facility Pine Gap');
+  assert.equal(pine.viewport, null);
+  assert.equal(pine.ring, null);
+});
+
 test('ask-side bypass: island ask and flyTo both bypass near-view proximity gate', async (t) => {
   const calls = [];
   installGoogleMocks(t, async (url) => {

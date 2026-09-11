@@ -15,8 +15,11 @@
  */
 
 /**
- * @typedef {{name:string, lat:number, lon:number, kind:string, aliases:string[]}} WorldLandmark
+ * @typedef {{name:string, lat:number, lon:number, kind:string, aliases:string[], keywords?:string[][]}} WorldLandmark
  * kind: 'building' | 'place' | 'forest' | 'mountain' | 'island'
+ * keywords: description groups — a group matches when EVERY keyword appears
+ *   in the query ("frühwarnsystem" + "australien" → Pine Gap). For
+ *   description search ("das mit den Kuppeln in Australien"), not names.
  */
 
 /** Hand-checked coordinates (WGS84). Aliases are matched case-insensitively. */
@@ -114,6 +117,21 @@ export const WORLD_LANDMARKS = Object.freeze([
   { name: 'Angkor Wat, Cambodia', lat: 13.4125, lon: 103.867, kind: 'place', aliases: ['angkor wat', 'angkor'] },
   { name: 'Sydney Opera House', lat: -33.8568, lon: 151.2153, kind: 'building', aliases: ['sydney opera house', 'opernhaus sydney', 'sydney oper', 'opera house sydney'] },
   { name: 'Sydney Harbour Bridge', lat: -33.8523, lon: 151.2108, kind: 'building', aliases: ['sydney harbour bridge', 'hafenbrücke sydney'] },
+  // ---- Early-warning / intel sites (domes, radomes) ---------------------------
+  // Pine Gap: 38 radomes + DSP/SBIRS relay = the "Frühwarnsystem mit den
+  // großen Kuppeln in Australien". Verified: -23.80, 133.7375 (Wikipedia).
+  { name: 'Joint Defence Facility Pine Gap', lat: -23.8, lon: 133.7375, kind: 'place',
+    aliases: ['pine gap', 'joint defence facility pine gap', 'joint defense facility pine gap', 'pine gap alice springs', 'jdfpg'],
+    keywords: [
+      ['frühwarnsystem', 'australien'],
+      ['fruehwarnsystem', 'australien'],
+      ['raketenfrühwarnung', 'australien'],
+      ['raketenfruehwarnung', 'australien'],
+      ['abhörstation', 'australien'],
+      ['abhoerstation', 'australien'],
+      ['radom', 'australien'],
+      ['kuppeln', 'australien'],
+    ] },
   // ---- German forests & nature (for "diesen Wald") ------------------------------
   { name: 'Black Forest (Schwarzwald)', lat: 48.13, lon: 8.23, kind: 'forest', aliases: ['schwarzwald', 'black forest'] },
   { name: 'Bavarian Forest (Bayerischer Wald)', lat: 49.0, lon: 13.2, kind: 'forest', aliases: ['bayerischer wald', 'bayerwald', 'bavarian forest'] },
@@ -141,6 +159,20 @@ const ALIAS_INDEX = (() => {
   });
   // Longest first so "sacre coeur paris" beats "sacre coeur".
   entries.sort((a, b) => b.key.length - a.key.length);
+  return entries;
+})();
+
+/** Pre-normalized keyword groups → landmark index for description search. */
+const KEYWORD_INDEX = (() => {
+  const entries = [];
+  WORLD_LANDMARKS.forEach((mark, index) => {
+    for (const group of mark.keywords || []) {
+      const words = group
+        .map((w) => String(w || '').toLowerCase().normalize('NFC').trim())
+        .filter((w) => w.length >= 3);
+      if (words.length) entries.push({ words, index });
+    }
+  });
   return entries;
 })();
 
@@ -188,6 +220,11 @@ export function findWorldLandmark(query) {
   for (const { key, index } of ALIAS_INDEX) {
     if (key.length < 4) continue;
     if (norm.includes(key)) return pickLandmark(index);
+  }
+  // 4. description keywords: EVERY keyword of any group must appear
+  // ("das frühwarnsystem in australien mit den kuppeln" → Pine Gap).
+  for (const { words, index } of KEYWORD_INDEX) {
+    if (words.every((w) => norm.includes(w))) return pickLandmark(index);
   }
   return null;
 }

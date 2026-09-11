@@ -3,6 +3,7 @@ import { lookupNeighborhoodRing } from '../data/neighborhoodPolygons.js';
 import { lookupNaturalRegionOutline, findNaturalRegion } from '../data/naturalEarthRegions.js';
 import { registerDynamicCredit, NATURAL_EARTH_CREDIT } from '../data/dataCredits.js';
 import { isPickedWorldPosition } from '../data/scenePick.js';
+import { findWorldLandmark } from '../voice/worldLandmarks.js';
 
 /**
  * Annotation target resolver.
@@ -785,6 +786,28 @@ async function keylessNominatimPlace(query, signal) {
   const cacheKey = `${q.toLowerCase()}|nominatim`;
   const cached = cacheRead(geocodeCache, cacheKey);
   if (cached !== undefined) return cached;
+  // Instant path: world-famous landmarks (incl. description keywords like
+  // "Frühwarnsystem in Australien" → Pine Gap) resolve locally — the backend
+  // /api/geocode answers these too, but this skips the roundtrip entirely.
+  try {
+    const landmark = findWorldLandmark(q);
+    if (landmark) {
+      const primaryName = landmark.name.split(',')[0].trim() || landmark.name;
+      const place = {
+        lat: landmark.lat,
+        lon: landmark.lon,
+        label: primaryName,
+        primaryName: landmark.name,
+        types: [],
+        viewport: null,
+        ring: null,
+      };
+      cacheWrite(geocodeCache, cacheKey, place);
+      return place;
+    }
+  } catch {
+    /* registry never breaks geocoding */
+  }
   try {
     const response = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`, { signal });
     if (!response.ok) {
