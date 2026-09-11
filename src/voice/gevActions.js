@@ -992,7 +992,15 @@ async function annotateMap(annotations, args = {}) {
   if (!annotations || typeof annotations.annotate !== 'function') {
     return { ok: false, action: 'annotate_map', error: 'Annotation engine unavailable' };
   }
-  const raw = Array.isArray(args.annotations) ? args.annotations : [];
+  let raw = Array.isArray(args?.annotations) ? args.annotations : [];
+  if (!raw.length && (args?.target || args?.query || args?.location || args?.place || args?.entity || args?.name)) {
+    raw = [{
+      target: args.target || args.query || args.location || args.place || args.entity || args.name,
+      type: args.type || 'area',
+      entityKind: args.entityKind,
+      label: args.label,
+    }];
+  }
   if (!raw.length) {
     return { ok: false, action: 'annotate_map', error: 'No annotations supplied' };
   }
