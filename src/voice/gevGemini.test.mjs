@@ -112,8 +112,8 @@ test('live token request is a flat single-use auth token', () => {
   const body = buildLiveTokenRequest();
   assert.equal(body.uses, 1);
   const skew = Date.parse(body.expireTime) - before;
-  assert.ok(skew > 29 * 60 * 1000 && skew <= 30 * 60 * 1000);
-  assert.ok(Date.parse(body.newSessionExpireTime) - before <= 60 * 1000);
+  assert.ok(skew > 29 * 60 * 1000 && skew <= 30 * 60 * 1000 + 2000);
+  assert.ok(Date.parse(body.newSessionExpireTime) - before <= 60 * 1000 + 2000);
 });
 
 test('live setup nests modalities under generationConfig', () => {

@@ -285,11 +285,27 @@ export async function probeOpenAiVoiceKey() {
     const probe = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const timer = probe ? setTimeout(() => { try { probe.abort(); } catch { /* noop */ } }, 6000) : null;
     try {
+      const vRes = await fetch('/api/voice/status', { cache: 'no-store', signal: probe?.signal }).catch(() => null);
+      if (vRes?.ok) {
+        const vData = await vRes.json().catch(() => null);
+        if (vData?.source === 'voice-status' && typeof vData?.openai === 'boolean') return vData.openai;
+      }
       const response = await fetch('/api/setup/status', { cache: 'no-store', signal: probe?.signal });
-      if (!response.ok) return null;
-      const status = await response.json().catch(() => null);
-      const openai = status?.keys?.find?.((key) => key?.id === 'openai');
-      return typeof openai?.set === 'boolean' ? openai.set : null;
+      if (response && response.ok) {
+        const status = await response.json().catch(() => null);
+        const openai = status?.keys?.find?.((key) => key?.id === 'openai');
+        return typeof openai?.set === 'boolean' ? openai.set : null;
+      }
+      if (response && response.status === 403) {
+        const rt = await fetch('/api/realtime/token', { cache: 'no-store', signal: probe?.signal }).catch(() => null);
+        if (rt && rt.status === 503) {
+          const body = await rt.json().catch(() => null);
+          if (body?.error === 'OPENAI_API_KEY is not set') return false;
+        } else if (rt && rt.ok) {
+          return true;
+        }
+      }
+      return null;
     } finally {
       if (timer) clearTimeout(timer);
     }
@@ -308,11 +324,28 @@ export async function probeGeminiVoiceKey() {
     const probe = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const timer = probe ? setTimeout(() => { try { probe.abort(); } catch { /* noop */ } }, 6000) : null;
     try {
+      const vRes = await fetch('/api/voice/status', { cache: 'no-store', signal: probe?.signal }).catch(() => null);
+      if (vRes?.ok) {
+        const vData = await vRes.json().catch(() => null);
+        if (vData?.source === 'voice-status' && typeof vData?.gemini === 'boolean') return vData.gemini;
+      }
       const response = await fetch('/api/setup/status', { cache: 'no-store', signal: probe?.signal });
-      if (!response.ok) return null;
-      const status = await response.json().catch(() => null);
-      const gemini = status?.keys?.find?.((key) => key?.id === 'gemini');
-      return typeof gemini?.set === 'boolean' ? gemini.set : null;
+      if (response && response.ok) {
+        const status = await response.json().catch(() => null);
+        const gemini = status?.keys?.find?.((key) => key?.id === 'gemini');
+        return typeof gemini?.set === 'boolean' ? gemini.set : null;
+      }
+      if (response && response.status === 403) {
+        const gt = await fetch('/api/gemini/live-token', { method: 'POST', cache: 'no-store', signal: probe?.signal }).catch(() => null);
+        if (gt && gt.status === 503) {
+          const body = await gt.json().catch(() => null);
+          if (body?.code === 'GEMINI_NOT_CONFIGURED') return false;
+        } else if (gt && gt.ok) {
+          const body = await gt.json().catch(() => null);
+          if (body?.token) return true;
+        }
+      }
+      return null;
     } finally {
       if (timer) clearTimeout(timer);
     }
@@ -338,7 +371,7 @@ export async function startBestVoice(controller, freeVoice, liveVoice = null) {
     controller.start({ pushToTalk: false });
     return;
   }
-  if (openai === false && gemini === true && liveVoice) {
+  if ((openai === false || (openai === null && gemini === true)) && gemini === true && liveVoice) {
     if (freeVoice.isActive()) freeVoice.stop();
     const started = await liveVoice.start().catch((error) => ({ ok: false, error: error?.message }));
     if (started?.ok) return;
@@ -347,7 +380,7 @@ export async function startBestVoice(controller, freeVoice, liveVoice = null) {
     freeVoice.start();
     return;
   }
-  if (openai === false) {
+  if (openai === false || gemini === false) {
     if (liveVoice?.isActive()) liveVoice.stop();
     freeVoice.start();
     return;

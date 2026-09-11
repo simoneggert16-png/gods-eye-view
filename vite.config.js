@@ -6315,6 +6315,26 @@ export function geminiFreeProxy() {
       res.end(JSON.stringify({ tools: GEV_REALTIME_TOOLS, count: GEV_REALTIME_TOOLS.length }));
     });
 
+    middlewares.use('/api/voice/status', async (req, res) => {
+      if (req.method !== 'GET') {
+        res.statusCode = 405;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+      }
+      const openai = Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim());
+      const gemini = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim());
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(JSON.stringify({
+        source: 'voice-status',
+        openai,
+        gemini,
+        preferred: openai ? 'openai' : (gemini ? 'gemini' : 'free'),
+      }));
+    });
+
     // Chat-history mirror for the in-app voice log (LOG drawer): appends turns
     // to .gev-logs/voice-conversations.jsonl next to the realtime debug log.
     // Localhost dev loopback only in practice (same server that serves the app).
