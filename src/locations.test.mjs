@@ -528,15 +528,16 @@ test('geocoded Location branches forward the resolved-navigation ownership hook'
   const search = source.slice(searchStart, searchEnd);
   assert.equal(
     (search.match(/onStart: options\.onStart/g) || []).length,
-    3,
-    'swath, viewport, and landmark flights must each forward onStart',
+    4,
+    'swath, viewport, building-bounds, and world-landmark flights must each forward onStart',
   );
   assert.equal(
     (search.match(/onCancel: options\.onCancel/g) || []).length,
-    3,
-    'swath, viewport, and landmark flights must each forward onCancel',
+    4,
+    'swath, viewport, building-bounds, and world-landmark flights must each forward onCancel',
   );
-  assert.ok(search.indexOf('return null;') < search.indexOf('onStart: options.onStart'));
+  assert.ok(search.indexOf('return null;') < search.lastIndexOf('onStart: options.onStart'));
+  assert.ok(search.includes('world-landmark'), 'instant world-landmark flight resolves locally');
 });
 
 test('globe and city-overview flights name the world frame explicitly', () => {
@@ -720,4 +721,34 @@ test('keyless search retries the genitive variant after a miss', async () => {
     globalThis.fetch = priorFetch;
     if (hadWindow) globalThis.window = priorWindow;
   }
+});
+
+test('world landmarks fly instantly without any network', async () => {
+  const viewer = stubViewer();
+  const priorFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => { fetchCalls += 1; throw new Error('must not fetch'); };
+  try {
+    const tower = await searchAndFlyTo(viewer, 'Eiffelturm', {});
+    assert.equal(tower.label, 'Eiffel Tower, Paris');
+    assert.equal(tower.navigationMode, 'world-landmark');
+    assert.ok(tower.latitude > 48.8 && tower.latitude < 48.9);
+    assert.equal(viewer.flights.length, 1);
+    assert.equal(fetchCalls, 0, 'no upstream call for a registered landmark');
+
+    const forest = await searchAndFlyTo(stubViewer(), 'Schwarzwald', {});
+    assert.equal(forest.label, 'Black Forest (Schwarzwald)');
+    assert.ok(forest.rangeM > 10000, 'forests frame wide');
+
+    const liberty = await searchAndFlyTo(stubViewer(), 'Freiheitsstatue', {});
+    assert.equal(liberty.label, 'Statue of Liberty, New York');
+  } finally {
+    globalThis.fetch = priorFetch;
+  }
+});
+
+test('world landmark variants feed the geocode retry chain', async () => {
+  assert.ok(placeQueryVariants('Eiffelturm').includes('Eiffel Tower, Paris'));
+  assert.ok(placeQueryVariants('Freiheitsstatue').includes('Statue of Liberty, New York'));
+  assert.ok(placeQueryVariants('Schwarzwald').includes('Black Forest (Schwarzwald)'));
 });

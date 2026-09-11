@@ -1,5 +1,6 @@
 import * as Cesium from 'cesium';
 import { viewportBias, placesNearViewRecovery } from './annotations/annotationResolver.js';
+import { findWorldLandmark } from './voice/worldLandmarks.js';
 
 /**
  * Points of Interest per city.
@@ -368,6 +369,14 @@ export function placeQueryVariants(query) {
     if (!variants.some((v) => /epstein temple/i.test(v))) variants.push('Epstein temple');
     if (!variants.some((v) => /little saint james/i.test(v))) variants.push('Little Saint James Island');
   }
+  // Worldwide famous buildings: try the canonical English name as a variant
+  // ("Eiffelturm" → "Eiffel Tower, Paris") so both Google and Nominatim hit.
+  try {
+    const landmark = findWorldLandmark(original);
+    if (landmark && !variants.some((v) => v.toLowerCase() === landmark.name.toLowerCase())) {
+      variants.push(landmark.name);
+    }
+  } catch { /* registry never breaks variant building */ }
   return variants.filter(Boolean).slice(0, 4);
 }
 
@@ -433,6 +442,21 @@ async function keylessNominatimGeocode(query) {
 }
 
 /**
+ * Camera range (meters) for an instant world-landmark flight by kind.
+ * Buildings get close framing; forests/regions get an overview swath.
+ * Pure — exported for unit tests.
+ */
+export function landmarkRangeForKind(kind, viewMode = null) {
+  const base = kind === 'building' ? 650
+    : kind === 'forest' ? 32000
+    : kind === 'mountain' ? 9000
+    : kind === 'island' ? 5000
+    : 2800;
+  if (viewMode === 'overview') return Math.min(120000, base * 6);
+  return base;
+}
+
+/**
  * Geocode a place name using Google Geocoding API, then fly there at a scale
  * appropriate to the request. Countries and cities use their viewport by
  * default; precise landmarks/buildings use close landmark framing.
@@ -442,6 +466,37 @@ export async function searchAndFlyTo(viewer, query, options = {}) {
 
   const beforeFly = typeof options.beforeFly === 'function' ? options.beforeFly : null;
   const mayFly = () => beforeFly === null || beforeFly() !== false;
+
+  // Instant path: world-famous buildings/places resolve locally with
+  // hand-checked coordinates — no network, no quota, no miss.
+  // An explicit rangeM still wins; overview widens the framing.
+  try {
+    const landmark = findWorldLandmark(query);
+    if (landmark) {
+      if (!mayFly()) return CANCELLED_SEARCH;
+      const requestedRange = finitePositive(options.range);
+      const duration = finitePositive(options.duration) || 2.2;
+      const range = requestedRange || landmarkRangeForKind(landmark.kind, options.viewMode);
+      const flight = flyToLandmark(viewer, landmark.lat, landmark.lon, {
+        range,
+        pitch: landmark.kind === 'building' ? -25 : -38,
+        heading: landmark.kind === 'building' ? 30 : 0,
+        buildingHeight: landmark.kind === 'building' ? 30 : 0,
+        duration,
+        onStart: options.onStart,
+        onComplete: options.onComplete,
+        onCancel: options.onCancel,
+      });
+      if (flight === false) return CANCELLED_SEARCH;
+      return {
+        label: landmark.name,
+        latitude: landmark.lat,
+        longitude: landmark.lon,
+        navigationMode: 'world-landmark',
+        rangeM: Math.round(flight?.range || range),
+      };
+    }
+  } catch { /* landmark shortcut never breaks geocoding */ }
 
   let result = null;
   let lat;

@@ -53,6 +53,7 @@ import {
   normalizeRegionalWeather,
 } from './src/data/regionalBrief.js';
 import { normalizeAdsbLolPointResponse } from './src/data/adsbLolFallback.js';
+import { findWorldLandmark, worldLandmarkAliasDict } from './src/voice/worldLandmarks.js';
 import { createAisStreamAdapter, isRecognizedAisEnvelope } from './src/data/aisStreamAdapter.js';
 import { parseSilenceTimeoutEnv } from './src/data/aisWatchdog.js';
 import { keylessHudSummaryResponse } from './src/hudSummaryResponse.js';
@@ -4958,6 +4959,7 @@ export const GEOCODE_QUERY_DICT = Object.freeze({
   'totes meer': 'Dead Sea',
   'nordsee': 'North Sea',
   'ostsee': 'Baltic Sea',
+  ...worldLandmarkAliasDict(),
 });
 
 export function getGeocodeQueryFallbacks(query) {
@@ -4967,6 +4969,13 @@ export function getGeocodeQueryFallbacks(query) {
 
   const lower = q.toLowerCase().replace(/^(?:der|die|das|den|dem|des)\s+/i, '').trim();
   if (GEOCODE_QUERY_DICT[lower]) fallbacks.push(GEOCODE_QUERY_DICT[lower]);
+
+  // Worldwide famous buildings: canonical English name as first fallback
+  // ("Eiffelturm in Paris" → "Eiffel Tower, Paris").
+  try {
+    const landmark = findWorldLandmark(q);
+    if (landmark) fallbacks.push(landmark.name);
+  } catch { /* registry never breaks fallbacks */ }
 
   const stripped = q.replace(/^(?:der|die|das|den|dem|des)\s+/i, '').replace(/\s+(?:ein|ab|an|auf)$/i, '').trim();
   if (stripped && stripped.toLowerCase() !== q.toLowerCase()) {
@@ -5092,6 +5101,26 @@ function geocodeProxy() {
       // what the Nominatim usage policy asks of us.
       const task = _nominatimQueue.then(async () => {
         const lowerNorm = query.toLowerCase().replace(/^(?:der|die|das|den|dem|des)\s+/i, '').replace(/\s+(?:ein|ab|an|auf)$/i, '').trim();
+        // Instant path: world-famous buildings/places answer from the local
+        // registry — no upstream roundtrip, no throttle wait, no miss.
+        try {
+          const landmark = findWorldLandmark(query);
+          if (landmark) {
+            return JSON.stringify({
+              found: true,
+              query,
+              lat: landmark.lat,
+              lon: landmark.lon,
+              label: landmark.name,
+              bbox: null,
+              placeClass: landmark.kind === 'building' ? 'building' : 'place',
+              placeType: landmark.kind,
+              addressType: landmark.kind,
+              geojson: null,
+              landmark: true,
+            });
+          }
+        } catch { /* registry never breaks geocoding */ }
         const preferred = GEOCODE_QUERY_DICT[lowerNorm] || GEOCODE_QUERY_DICT[query.toLowerCase()];
         let row = null;
         if (preferred) {

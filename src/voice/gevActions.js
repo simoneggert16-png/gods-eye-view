@@ -18,6 +18,7 @@ import { initCameraVerbs, moveCamera, flyRoute, interruptCameraMotion, adjustOrb
 import { cachedGroundFloor, warmGroundFloor } from '../data/groundFloor.js';
 import { isPickedWorldPosition } from '../data/scenePick.js';
 import { resolveRegionRingForQuery } from '../annotations/annotationResolver.js';
+import { WORLD_LANDMARKS } from './worldLandmarks.js';
 import { normalizeRadioCountryInput } from '../data/radioCountry.js';
 import { TR3B_CLASS } from '../data/tr3bRegistry.js';
 
@@ -2868,6 +2869,26 @@ function nearbyKnownLandmarks(latitude, longitude, cameraHeightM) {
         longitude: poi.lon,
         distanceKm: Number(distanceKm.toFixed(3)),
       });
+    }
+  }
+  // Worldwide famous buildings/places: the same radius logic, so the scene
+  // context names the Eiffel Tower over Paris just like a CITY_POIS entry.
+  // Capped so a dense European cluster cannot flood the prompt.
+  if (matches.length < 5 && Array.isArray(WORLD_LANDMARKS)) {
+    for (const mark of WORLD_LANDMARKS) {
+      if (!Number.isFinite(mark?.lat) || !Number.isFinite(mark?.lon)) continue;
+      const distanceKm = haversineKm(latitude, longitude, mark.lat, mark.lon);
+      if (distanceKm > maxDistanceKm) continue;
+      if (matches.some((m) => m.name === mark.name)) continue;
+      matches.push({
+        name: mark.name,
+        kind: mark.kind,
+        worldLandmark: true,
+        latitude: mark.lat,
+        longitude: mark.lon,
+        distanceKm: Number(distanceKm.toFixed(3)),
+      });
+      if (matches.length >= 8) break;
     }
   }
   return matches.sort((a, b) => a.distanceKm - b.distanceKm).slice(0, 5);

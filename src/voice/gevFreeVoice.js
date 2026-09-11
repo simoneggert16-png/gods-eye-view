@@ -113,7 +113,7 @@ function cleanPlace(raw) {
   return String(raw || '')
     .trim()
     .replace(/^(to|nach|the|der|die|das|den|zum|zur|in|im|an|ans|on|onto|at|grenzen von|grenze von|area of|region of)\s+/i, '')
-    .replace(/\s+(?:ein|ab|an|auf)$/i, '')
+    .replace(/\s+(?:ein|ab|an|auf|rein|raus|hinein|herein|hinaus|heraus|dorthin|dahin)$/i, '')
     .replace(/[?.!…,;]+$/, '')
     .trim()
     .slice(0, 160);
@@ -163,15 +163,24 @@ export function parseFreeVoiceCommand(input) {
   // --- Zoom into a PLACE (flies there — a relative nudge would be invisible)
   // Must run before relative zoom: "zoom into Stanford Bridge" contains
   // "zoom in" but means fly_to_location with close framing.
+  // Deictic names ("diesen Wald", "dieses Gebäude", "dorthin") skip regex
+  // extraction: the controller sends them straight to the chat brain with
+  // history + scene ("diesen Wald" after "Schwarzwald" = Schwarzwald).
   {
     const m = text.match(
-      /zoom\s+in(?:to| onto)?\s+(.{2,120})|zoom\s+(?:to|toward(?:s)?)\s+(.{2,120})|(?:heran|ran)?zoomen?\s+(?:an\s+|auf\s+|nach\s+|zu\s+|zum\s+|zur\s+)(.{2,120})/,
+      /zoom\s+in(?:to| onto)?\s+(.{2,120})|zoom\s+(?:to|toward(?:s)?)\s+(.{2,120})|(?:heran|ran)?zoomen?\s+(?:an\s+|auf\s+|in\s+|im\s+|nach\s+|zu\s+|zum\s+|zur\s+)(.{2,120})/,
     );
     const place = cleanPlace(m?.[1] || m?.[2] || m?.[3]);
-    const filler = /^(here|there|hier|da|dorthin|it|this|that|das|dies|a bit|a little|bisschen|wenig|closer|näher|bitte|mal)$/;
+    const filler = /^(here|there|hier|da|dorthin|dahin|it|this|that|das|dies|a bit|a little|bisschen|wenig|closer|näher|bitte|mal)$/;
     if (m && place && !filler.test(place.toLowerCase())) {
       const preset = resolvePreset(` ${place.toLowerCase()} `);
       const args = preset ? { locationId: preset, viewMode: 'close' } : { query: place, viewMode: 'close' };
+      if (!preset && hasReferenceWords(place)) {
+        return toBrain(
+          [{ name: 'fly_to_location', args }],
+          say(`Zooming into ${place}.`, `Zoome nach ${place}.`),
+        );
+      }
       return {
         calls: [{ name: 'fly_to_location', args }],
         speech: say(`Zooming into ${place}.`, `Zoome nach ${place}.`),
@@ -401,12 +410,12 @@ export function parseFreeVoiceCommand(input) {
   {
     const deicticFly = hasReferenceWords(raw)
       && /\b(fliege?|flieg|bring|nimm|geh|zoom|take|fly|go|navigate|show)\b/i.test(raw)
-      && /\b(dorthin|dahin|hierher|hierhin|dort|here|there|it|ihn|es|ihm|dies|das|diesen|diese)\b/i.test(raw);
+      && /\b(dorthin|dahin|hierher|hierhin|dort|here|there|it|ihn|es|ihm|dies|dieser|dieses|diesem|diesen|diese|das)\b/i.test(raw);
     if (deicticFly) {
-      const match = raw.toLowerCase().match(/\b(dorthin|dahin|hierher|hierhin|dort|here|there|it|ihn|es|ihm)\b/);
+      const match = raw.toLowerCase().match(/\b(dorthin|dahin|hierher|hierhin|dort|here|there|it|ihn|es|ihm|dieser|dieses|diesem|diesen|diese|dies|das)\b/);
       const fallbackQuery = cleanPlace(match ? match[0] : 'there') || 'there';
       return toBrain(
-        [{ name: 'fly_to_location', args: { query: fallbackQuery } }],
+        [{ name: 'fly_to_location', args: { query: fallbackQuery, viewMode: 'close' } }],
         say(`Flying to ${fallbackQuery}.`, `Fliege nach ${fallbackQuery}.`),
       );
     }
@@ -1367,7 +1376,8 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     try {
       history = (log?.list?.() || []).slice(-8).map((e) => ({ who: e.who, text: e.text }));
     } catch { /* route without history */ }
-    const message = buildPlaceFixMessage(originalQuery, history);
+    const scene = await readContextText();
+    const message = buildPlaceFixMessage(originalQuery, history, scene);
     for (const endpoint of ['/api/zai/chat', '/api/ollama/chat']) {
       let response = null;
       try {

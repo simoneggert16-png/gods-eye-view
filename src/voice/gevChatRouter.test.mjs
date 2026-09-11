@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildPlaceFixMessage,
   buildRouterHistory,
   buildRouterMessage,
   extractDirectAnswer,
@@ -40,6 +41,15 @@ test('router prompt carries the tool menu', () => {
   assert.ok(ROUTER_SYSTEM_PROMPT.includes('{"name"'));
   assert.equal(ROUTER_TOOLS.length, 28, 'router menu covers every voice tool — update with the registry');
   assert.ok(ROUTER_TOOLS.some((line) => line.startsWith('fly_to_location')));
+});
+
+test('router prompt resolves deictics and worldwide landmarks', () => {
+  assert.ok(ROUTER_SYSTEM_PROMPT.includes('diesen Wald'), 'deictic example guides Ollama');
+  assert.ok(ROUTER_SYSTEM_PROMPT.includes('Eiffelturm'), 'worldwide landmark example guides Ollama');
+  assert.ok(ROUTER_SYSTEM_PROMPT.includes('NEVER geocode the demonstrative'), 'no literal geocode of diesen/diese');
+  const fix = buildPlaceFixMessage('diesen Wald', [{ who: 'you', text: 'zeig mir den Schwarzwald' }], 'Black Forest view');
+  assert.ok(fix.includes('Schwarzwald'), 'history disambiguates');
+  assert.ok(fix.includes('Black Forest view'), 'scene grounds the retry');
 });
 
 test('history compresses to short YOU/APP/AI lines, newest wins', () => {
@@ -92,10 +102,10 @@ test('place fixes extract a corrected name or honest unknown', () => {  assert.d
 });
 
 test('reference words catch pronouns, never real names', () => {
-  for (const text of ['seine Insel', 'fliege dorthin', 'track that plane', 'markiere es', 'take me there', 'zeig mir diesen Ort']) {
+  for (const text of ['seine Insel', 'fliege dorthin', 'track that plane', 'markiere es', 'take me there', 'zeig mir diesen Ort', 'zoome in diesen Wald rein', 'dieses Gebäude', 'dieser Turm']) {
     assert.equal(hasReferenceWords(text), true, text);
   }
-  for (const text of ['Tokyo', 'Epstein island', 'Shenzhen', 'Texas', 'take me to Paris', 'Stuttgart']) {
+  for (const text of ['Tokyo', 'Epstein island', 'Shenzhen', 'Texas', 'take me to Paris', 'Stuttgart', 'Eiffelturm', 'Schwarzwald']) {
     assert.equal(hasReferenceWords(text), false, text);
   }
 });

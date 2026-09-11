@@ -52,6 +52,25 @@ test('zoom into a place flies there with close framing', () => {
   assert.equal(parseFreeVoiceCommand('Zoom into it').calls[0].name, 'adjust_camera_zoom');
 });
 
+test('deictic zoom ("diesen Wald") routes to the brain, never to literal geocode', () => {
+  for (const text of [
+    'zoome in diesen Wald rein',
+    'zoome in dieses Gebäude rein',
+    'zoome in diesen Turm',
+    'Zoom into this forest',
+    'fliege in diesen Wald',
+  ]) {
+    const parsed = parseFreeVoiceCommand(text);
+    assert.ok(parsed.brainRoute, `${text} must brain-route`);
+    assert.equal(parsed.brainRoute.fallbackCalls[0].name, 'fly_to_location', text);
+    assert.equal(parsed.brainRoute.fallbackCalls[0].args.viewMode, 'close', text);
+    assert.equal(parsed.calls.length, 0, `${text} must not fly literally`);
+  }
+  // Named places still fly directly.
+  const tower = parseFreeVoiceCommand('zoome in den Eiffelturm rein');
+  assert.equal(tower.calls[0]?.name || tower.brainRoute?.fallbackCalls[0]?.name, 'fly_to_location');
+});
+
 test('layers, styles, hud and map stacks map to enums', () => {
   assert.deepEqual(parseFreeVoiceCommand('Turn on the flights layer.').calls[0], {
     name: 'set_layer_visibility', args: { layerId: 'flights', enabled: true },

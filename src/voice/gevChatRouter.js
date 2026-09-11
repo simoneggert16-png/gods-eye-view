@@ -25,7 +25,7 @@ export const ROUTER_MAX_HISTORY_CHARS = 150;
  * short form. Unknown names are rejected by the runner anyway.
  */
 export const ROUTER_TOOLS = Object.freeze([
-  'fly_to_location {query | locationId | latitude + longitude as SEPARATE numbers, viewMode?: close|overview} — fly/zoom to a PLACE (resolves pronouns from history!). When you know exact coordinates of a famous place, pass latitude and longitude as two separate numbers, never packed into query',
+  'fly_to_location {query | locationId | latitude + longitude as SEPARATE numbers, viewMode?: close|overview} — fly/zoom to a PLACE (resolves pronouns like "diesen Wald"/"dorthin"/"it" from history + scene!). When you know exact coordinates of a famous place, pass latitude and longitude as two separate numbers, never packed into query',
   'adjust_camera_zoom {direction: in|out, amount: little|medium|lot} — relative zoom, no place',
   'zoom_to_globe {} — full Earth view',
   'set_layer_visibility {layerId, enabled} — layers: flights, military, satellites, earthquakes, traffic, cctv, radio, bikeshare, ais-live-vessels, local-firms, local-datacenters, local-dams, telegeography-submarine-cables, rocket-launches',
@@ -61,7 +61,8 @@ export const ROUTER_SYSTEM_PROMPT = [
   'Use the conversation history to resolve pronouns and references ("seine Insel", "dorthin", "it", "there") to the real place or thing meant.',
   '1. MAP ACTIONS: Pick the single best tool from the menu. Prefer navigation with a real place name over relative moves when a place is meant.',
   'When the user asks to draw, outline, or show boundaries of any place, country, state, region, island, city, or address (e.g. "zeichne ... ein", "umrande ...", "outline ..."), ALWAYS use annotate_map with type: "area" and flyTo: true. Translate colloquial nicknames or German place names to standard international/English names if helpful (e.g. "Epsteins Insel" -> "Epstein Island" or "Little Saint James", "Osterinsel" -> "Easter Island").',
-  '"Zoom into X / zoome in X rein" with a named or previously mentioned place means fly_to_location with viewMode close, not a relative nudge. For famous landmarks or specific buildings on islands/places, use the known landmark name (e.g. "Epsteins bekanntes Gebäude / Tempel" -> "Epstein temple" or "The Temple, Virgin Islands").',
+  '"Zoom into X / zoome in X rein" with a named or previously mentioned place means fly_to_location with viewMode close, not a relative nudge. World-famous buildings resolve directly worldwide (not just one island): map German names to canonical English ones (e.g. "Eiffelturm" -> "Eiffel Tower, Paris", "Freiheitsstatue" -> "Statue of Liberty", "Kölner Dom" -> "Cologne Cathedral", "Brandenburger Tor" -> "Brandenburg Gate", "Epsteins bekanntes Gebäude / Tempel" -> "Epstein temple"). When you know exact coordinates of a famous place, prefer latitude + longitude as two separate numbers.',
+  'DEICTIC REFERENCES ("diesen Wald", "dieses Gebäude", "dieser Turm", "dorthin", "dahin", "it", "there"): NEVER geocode the demonstrative word itself. Resolve it from the conversation history (the last mentioned place of that kind — "diesen Wald" after "Schwarzwald" means Schwarzwald) and second from the current scene (camera place, selection, nearby landmarks). If neither names a place, answer briefly that you do not know which one is meant.',
   'For map actions, answer with ONLY a JSON object, no other text: {"name": "<tool>", "args": {...}, "say": "<short confirmation in the user language>"}',
   '2. QUESTIONS: If the user asks a question (e.g. why something has a strange color, what is visible, why water looks turquoise/cyan vs deep blue, sandbanks, reefs, bathymetry, terrain, mountains, geography, or place facts), answer DIRECTLY IN HELPFUL PLAIN TEXT in the user\'s language (at most 3 short sentences, no JSON).',
   '3. GIBBERISH: Only if an utterance is complete meaningless gibberish with neither an action nor a question, answer exactly: {"unknown": true}',
@@ -126,12 +127,15 @@ export function buildRouterMessage(text, historyEntries, sceneContext = '') {
  *
  * @param {string} query - The failed place query.
  * @param {Array} historyEntries - Log entries (oldest first).
+ * @param {string} [sceneContext] - Compact live scene snapshot (camera place, selection).
  */
-export function buildPlaceFixMessage(query, historyEntries) {
+export function buildPlaceFixMessage(query, historyEntries, sceneContext = '') {
   const history = buildRouterHistory(historyEntries);
   const clean = String(query || '').trim().slice(0, 160);
+  const scene = String(sceneContext || '').trim().slice(0, 800);
   const context = history ? `Conversation so far:\n${history}\n\n` : '';
-  return `${context}The place lookup for "${clean}" found nothing. Reply with ONLY JSON: {"query": "<corrected searchable place name>"} — fix typos (shenzen→Shenzhen), resolve pronouns from history, prefer English OpenStreetMap names. If it is unmappable, reply exactly {"unknown": true}.`;
+  const sceneBlock = scene ? `Current scene (camera place, selection, layers):\n${scene}\n\n` : '';
+  return `${context}${sceneBlock}The place lookup for "${clean}" found nothing. Reply with ONLY JSON: {"query": "<corrected searchable place name>"} — fix typos (shenzen→Shenzhen), resolve pronouns/demonstratives ("diesen Wald", "dorthin", "it") from history first and scene second, prefer English OpenStreetMap names. If it is unmappable, reply exactly {"unknown": true}.`;
 }
 
 /**
