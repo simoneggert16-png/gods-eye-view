@@ -10,6 +10,7 @@ import {
   resetGoogleTTSCooldown,
   speakFreeVoiceConfirmation,
   speakWithGoogleTTS,
+  truncateForSpeech,
   TTS_COOLDOWN_MS,
 } from './gevFreeVoice.js';
 
@@ -302,6 +303,35 @@ test('tts 429 cools down the cloud path so fallback is instant', async () => {
   assert.equal(calls, 2);
   resetGoogleTTSCooldown();
 });
+
+test('truncateForSpeech preserves short text and bounds long speech', () => {
+  assert.equal(truncateForSpeech('Kurzer Text.'), 'Kurzer Text.');
+  const long = 'Texas ist ein Bundesstaat im Süden der USA. Die Hauptstadt ist Austin. Es hat über 30 Millionen Einwohner und viele Städte wie Houston und Dallas.';
+  const res = truncateForSpeech(long, 80);
+  assert.ok(res.length <= 80);
+  assert.ok(res.endsWith('.'));
+});
+
+test('speakWithGoogleTTS times out and immediately falls back to local voice', async () => {
+  resetGoogleTTSCooldown();
+  const hangingFetch = (_url, opt) => new Promise((resolve, reject) => {
+    opt?.signal?.addEventListener('abort', () => reject(new Error('Aborted by timeout')));
+  });
+  const spoken = [];
+  const env = {
+    speechSynthesis: {
+      cancel: () => {},
+      getVoices: () => [{ name: 'Default', lang: 'de' }],
+      speak: (u) => spoken.push(u),
+    },
+    SpeechSynthesisUtterance: function (text) { this.text = text; },
+  };
+  const result = await speakWithGoogleTTS('Hallo.', { fetchImpl: hangingFetch, browserEnv: env, lang: 'de', timeoutMs: 25 });
+  assert.equal(result, 'local');
+  assert.equal(spoken.length, 1);
+  assert.equal(spoken[0].text, 'Hallo.');
+});
+
 
 test('local fallback prefers a google system voice in the text language', () => {
   const spoken = [];

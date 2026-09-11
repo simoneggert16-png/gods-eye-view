@@ -482,9 +482,7 @@ export function createAnnotationEngine({
       // ("target: Texas State Capitol" + "label: Capitol grounds") — a resolver HINT only.
       labelHint: typeof spec?.label === 'string' ? spec.label : null,
       // PROGRESSIVE resolution: anchor now (~100-400 ms Places/Geocode), outline later.
-      // Footprint fetches are the slow, flaky leg (Overpass p50 ≈ 1-3 s, p90 ≈ 12 s
-      // timeout — field test 7 logs); deferring them lets the mark appear and the tool
-      // result return while the outline resolves, then upgrades the mark in place.
+      // For 'area' marks, resolve eagerly so no temporary pin flashes before outline drapes:
       deferFootprint: wantFootprint,
       signal,
     });
@@ -687,7 +685,7 @@ export function createAnnotationEngine({
     const type = normalizeType(spec?.type);
     const id = `anno-${++_seq}`;
     const color = COLORS.has(spec?.color) ? spec.color : 'primary';
-    const label = cleanLabel(spec?.label) || resolved?.label || resolved?.from?.label || null;
+    const label = cleanLabel(spec?.label) || (type === 'area' ? null : resolved?.label) || resolved?.from?.label || null;
     const now = performance.now();
 
     const base = {

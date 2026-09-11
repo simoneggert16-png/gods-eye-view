@@ -4899,7 +4899,7 @@ function adsbLolProxy() {
  */
 const GEOCODE_CACHE_MS = 24 * 60 * 60 * 1000;
 const GEOCODE_CACHE_MAX = 200;
-const GEOCODE_MAX_RESPONSE_BYTES = 64 * 1024;
+const GEOCODE_MAX_RESPONSE_BYTES = 512 * 1024;
 function geocodeProxy() {
   /** @type {Map<string,{at:number,body:string}>} */
   const cache = new Map();
@@ -4948,6 +4948,8 @@ function geocodeProxy() {
           limit: '1',
           addressdetails: '0',
           'accept-language': 'en',
+          polygon_geojson: '1',
+          polygon_threshold: '0.005',
         });
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 12_000);
@@ -4975,6 +4977,7 @@ function geocodeProxy() {
             placeClass: String(row.class || ''),
             placeType: String(row.type || ''),
             addressType: String(row.addresstype || row.type || ''),
+            geojson: row.geojson || null,
           });
         } finally {
           clearTimeout(timer);
@@ -6095,6 +6098,8 @@ export function geminiFreeProxy() {
       // Q&A model so the fixed upstream URL cannot become an SSRF primitive.
       const configuredTts = String(process.env.GEMINI_TTS_MODEL || '').trim();
       const ttsModel = isValidGeminiModel(configuredTts) ? configuredTts : model;
+      const ttsController = new AbortController();
+      const ttsTimer = setTimeout(() => ttsController.abort(), 7_000);
       let upstream;
       try {
         upstream = await fetch(
@@ -6107,11 +6112,14 @@ export function geminiFreeProxy() {
               'x-goog-api-key': apiKey,
             },
             body: JSON.stringify(body),
+            signal: ttsController.signal,
           },
         );
       } catch (error) {
-        json(502, { error: `Gemini TTS request failed: ${String(error?.message || error).slice(0, 120)}`, audio: null });
+        json(504, { error: `Gemini TTS request timed out or failed: ${String(error?.message || error).slice(0, 120)}`, audio: null });
         return;
+      } finally {
+        clearTimeout(ttsTimer);
       }
       if (upstream.status >= 300 && upstream.status < 400) {
         try { await upstream.body?.cancel?.(); } catch { /* no-op */ }

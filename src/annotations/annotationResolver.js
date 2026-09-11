@@ -103,6 +103,7 @@ export async function resolveAnnotationTarget({
   // Places Text Search anchors the target. Used downstream to SIZE a fallback grounds
   // disc to the real feature instead of a blind GROUNDS_RADIUS_M constant.
   let placeViewport = null;
+  let placePolygonRing = null;
   // Canonical Places display name + `types` of the anchored feature — the Places
   // analogue of geocodePrimary/geocodeTypes: the name feeds OSM matching stripped of
   // locality suffixes; the types classify the entity (point-like vs area-like).
@@ -148,6 +149,7 @@ export async function resolveAnnotationTarget({
           geocodeTypes = geocoded.types || [];
           geocodePrimary = geocoded.primaryName || null;
           placeViewport = geocoded.viewport || null;
+          placePolygonRing = geocoded.ring || null;
           source = 'geocode';
           trace.geocode = `${geocoded.lat.toFixed(5)},${geocoded.lon.toFixed(5)}`;
         }
@@ -337,12 +339,13 @@ export async function resolveAnnotationTarget({
       fp = synthesizeBufferedArea(lat, lon, AROUND_LANDMARK_RADIUS_M);
     } else if (isAdmin) {
       // Pure admin: only an admin boundary is correct — never fall back to a
-      // building/landuse (a city is never a single building).
-      fp = await fetchAdminArea(lat, lon, matchName, scope, signal);
-      if (!fp && placeViewport) {
-        const boxRing = ringFromViewport(placeViewport);
-        if (boxRing) {
-          fp = { ring: boxRing, kind: 'area', heightM: null, synthesized: true };
+      // building/landuse (a city is never a single building), and never a rectangular bounding box.
+      if (placePolygonRing && placePolygonRing.length >= 3) {
+        fp = { ring: placePolygonRing, kind: 'area', heightM: null, synthesized: false };
+      } else {
+        fp = await fetchAdminArea(lat, lon, matchName, scope, signal);
+        if (!fp) {
+          fp = await fetchNominatimAdminPolygon(matchName || target, signal);
         }
       }
     } else if (scope === 'neighborhood') {
@@ -682,9 +685,57 @@ function normalizeGeocodeViewport(vp) {
   };
 }
 
+/** Extract a closed outer ring from a GeoJSON Polygon or MultiPolygon. */
+export function ringFromGeoJson(geojson) {
+  if (!geojson || typeof geojson !== 'object') return null;
+  let ring = null;
+  if (geojson.type === 'Polygon' && Array.isArray(geojson.coordinates?.[0])) {
+    ring = geojson.coordinates[0];
+  } else if (geojson.type === 'MultiPolygon' && Array.isArray(geojson.coordinates)) {
+    const polys = geojson.coordinates.map((c) => c?.[0]).filter(Array.isArray);
+    polys.sort((a, b) => b.length - a.length);
+    ring = polys[0] || null;
+  }
+  if (!ring || ring.length < 3) return null;
+  return closeRing(ring.map(([x, y]) => [Number(x), Number(y)]));
+}
+
+/**
+ * Fetch real boundary polygon from Nominatim with polygon_geojson=1 and polygon_threshold.
+ * Used for countries, states, counties, and cities when Overpass times out (e.g. 502).
+ */
+export async function fetchNominatimAdminPolygon(query, signal) {
+  const q = String(query || '').trim();
+  if (!q) return null;
+  const cacheKey = `nom_poly|${q.toLowerCase()}`;
+  const cached = cacheRead(footprintCache, cacheKey);
+  if (cached !== undefined) return cached;
+
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&polygon_geojson=1&polygon_threshold=0.005&limit=1`;
+    const res = await fetch(url, {
+      signal,
+      headers: {
+        'User-Agent': 'GodsEyeView/0.1 (+https://github.com/simoneggert16-png/gods-eye-view)',
+        Referer: 'https://github.com/simoneggert16-png/gods-eye-view',
+      },
+    });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    const row = Array.isArray(data) ? data[0] : null;
+    const ring = ringFromGeoJson(row?.geojson);
+    if (!ring || ring.length < 3) return null;
+    const fp = { ring, kind: 'area', heightM: null, synthesized: false };
+    cacheWrite(footprintCache, cacheKey, fp);
+    return fp;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Map a keyless /api/geocode (Nominatim) hit onto the geocodePlace shape
- * ({ lat, lon, label, primaryName, types, viewport }). Twin of
+ * ({ lat, lon, label, primaryName, types, viewport, ring }). Twin of
  * nominatimResultToGeocode in src/locations.js (kept separate: locations.js
  * already imports FROM this module, so sharing one would cycle). Pure —
  * unit-tested.
@@ -718,7 +769,8 @@ export function nominatimRowToPlace(row) {
       high: { latitude: bbox[1], longitude: bbox[3] },
     };
   }
-  return { lat, lon, label: primaryName, primaryName, types, viewport };
+  const ring = ringFromGeoJson(row?.geojson);
+  return { lat, lon, label: primaryName, primaryName, types, viewport, ring };
 }
 
 /**
@@ -1069,6 +1121,11 @@ async function fetchAdminArea(lat, lon, query, scope, signal) {
     return fp;
   }
   // No candidate pivoted to a usable in-scope relation.
+  const nomFp = await fetchNominatimAdminPolygon(query, signal);
+  if (nomFp) {
+    cacheWrite(footprintCache, cacheKey, nomFp);
+    return nomFp;
+  }
   if (transient) return undefined; // network blip during a pivot → don't cache, retry
   // For a neighborhood, an admin match may exist (so the early place= fallback above was
   // skipped) yet fail to yield a usable relation. Consult place= BEFORE declaring a
@@ -2042,7 +2099,10 @@ export async function resolveRegionRingForQuery(name, signal) {
   if (!geo) return null;
   const scope = scopeFromTypes(geo.types);
   if (!['country', 'state', 'county', 'city'].includes(scope)) return null;
-  const fp = await fetchAdminArea(geo.lat, geo.lon, q, scope, signal).catch(() => null);
+  let fp = geo.ring ? { ring: geo.ring } : await fetchAdminArea(geo.lat, geo.lon, q, scope, signal).catch(() => null);
+  if (!fp) {
+    fp = await fetchNominatimAdminPolygon(q, signal).catch(() => null);
+  }
   if (fp?.ring?.length >= 3) return { name: q, ring: fp.ring };
   return null;
 }

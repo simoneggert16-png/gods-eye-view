@@ -902,18 +902,38 @@ export function resetGoogleTTSCooldown() {
   _ttsCoolUntil = 0;
 }
 
-export async function speakWithGoogleTTS(text, { fetchImpl = null, browserEnv = null, lang = 'en', now = null } = {}) {
+/**
+ * Truncate long text to a concise 1-2 sentence lead for voice playback (maxChars).
+ * Spoken sentences generate in < 3s instead of 45s, while UI still displays the full text.
+ */
+export function truncateForSpeech(text, maxChars = 260) {
+  const str = String(text || '').trim();
+  if (str.length <= maxChars) return str;
+  const match = str.slice(0, maxChars).match(/^(.*?[.!?])(?:\s+|$)/s);
+  if (match && match[1] && match[1].length >= 30) return match[1].trim();
+  const wordMatch = str.slice(0, maxChars).match(/^(.*?)\s+\S*$/s);
+  return (wordMatch ? wordMatch[1] : str.slice(0, maxChars)).trim();
+}
+
+export async function speakWithGoogleTTS(text, { fetchImpl = null, browserEnv = null, lang = 'en', now = null, timeoutMs = 5500 } = {}) {
   const clean = String(text || '').trim().slice(0, 500);
   if (!clean) return null;
   const clock = typeof now === 'function' ? now : Date.now;
   const doFetch = fetchImpl || (typeof fetch !== 'undefined' ? fetch.bind(globalThis) : null);
   if (doFetch && clock() >= _ttsCoolUntil) {
+    let timer = null;
     try {
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      if (controller && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+        timer = setTimeout(() => { try { controller.abort(); } catch { /* no-op */ } }, timeoutMs);
+      }
       const response = await doFetch('/api/gemini/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: clean }),
+        signal: controller?.signal,
       });
+      if (timer) { clearTimeout(timer); timer = null; }
       const data = await response?.json?.().catch(() => null);
       if (response?.status === 429 || data?.retryable) {
         try { _ttsCoolUntil = clock() + TTS_COOLDOWN_MS; } catch { /* clock is best effort */ }
@@ -921,7 +941,10 @@ export async function speakWithGoogleTTS(text, { fetchImpl = null, browserEnv = 
         stopGoogleTTSPlayback(browserEnv);
         if (await playGoogleTTSAudio(data.audio, browserEnv)) return 'google';
       }
-    } catch { /* fall through to the local voice */ }
+    } catch {
+      if (timer) { clearTimeout(timer); timer = null; }
+      /* fall through to the local voice immediately */
+    }
   }
   return speakFreeVoiceConfirmation(clean, browserEnv, lang) ? 'local' : null;
 }
@@ -949,7 +972,8 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
   const speak = (text, lang = 'en') => {
     if (!announce) return;
     void (async () => {
-      const how = await speakWithGoogleTTS(text, { fetchImpl: doFetch, browserEnv, lang });
+      const speechText = truncateForSpeech(text, 260);
+      const how = await speakWithGoogleTTS(speechText, { fetchImpl: doFetch, browserEnv, lang });
       if (how === 'google') setDetail(`${text} · GOOGLE VOICE`);
       else if (how === 'local') setDetail(`${text} · LOCAL VOICE`);
     })();

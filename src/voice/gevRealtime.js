@@ -530,7 +530,16 @@ export class GevRealtimeController {
     this.pushToTalkKeyHeld = pushToTalkKeyHeld;
     this.spaceKeyHeld = spaceKeyHeld;
     if (!window.RTCPeerConnection || !navigator.mediaDevices?.getUserMedia) {
-      this.setStatus('error', 'WebRTC microphone support unavailable');
+      this.setStatus('idle', 'Microphone requires HTTPS or localhost');
+      try {
+        if (this.ui?.detail) this.ui.detail.textContent = 'MIC NEEDS HTTPS OR LOCALHOST · USE CHAT';
+        const drawer = this.ui?.root?.querySelector('[data-gev-chat-log]');
+        const toggle = this.ui?.root?.querySelector('[data-gev-chat-toggle]');
+        if (drawer && drawer.hidden) {
+          drawer.hidden = false;
+          toggle?.setAttribute?.('aria-expanded', 'true');
+        }
+      } catch {}
       return;
     }
 
@@ -2843,6 +2852,9 @@ function createVoiceControl({ reset = false } = {}) {
     }
     root.querySelector('.gev-voice-error-dismiss')?.addEventListener('click', () => {
       root.classList.add('error-dismissed');
+      root.dataset.status = 'idle';
+      const statusEl = root.querySelector('#gev-voice-status');
+      if (statusEl) statusEl.textContent = 'OFF';
     });
   }
   return {
