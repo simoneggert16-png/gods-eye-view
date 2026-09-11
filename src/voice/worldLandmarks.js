@@ -176,6 +176,61 @@ const KEYWORD_INDEX = (() => {
   return entries;
 })();
 
+/** Glue words ignored by token-set matching (articles, prepositions). */
+const LANDMARK_TOKEN_STOPWORDS = new Set([
+  'der', 'die', 'das', 'den', 'dem', 'des', 'the', 'a', 'an',
+  'beim', 'beim', 'am', 'im', 'in', 'an', 'auf', 'zu', 'zum', 'zur',
+  'von', 'vom', 'bei', 'mit', 'und', 'and', 'near', 'at', 'of',
+  'le', 'la', 'les', 'de', 'du', 'des', 'el', 'al',
+]);
+
+/**
+ * Fold + stem one token for fuzzy name matching: umlauts/ß folded
+ * (weiß→weiss, kölner→kolner, koelner→kolner) and German adjective endings
+ * stripped (weisses/weissen→weiss, grossen→gross). Applied to BOTH alias and
+ * query tokens, so declined forms meet ("beim weissen Haus" → "weisses Haus").
+ * Pure.
+ */
+export function stemLandmarkToken(word) {
+  let w = String(word || '').toLowerCase().normalize('NFC')
+    .replace(/ß/g, 'ss')
+    .replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u');
+  w = w.replace(/[^a-z0-9]/g, '')
+    .replace(/ae/g, 'a').replace(/oe/g, 'o').replace(/ue/g, 'u');
+  if (w.length >= 5) w = w.replace(/(es|en|em|er|e)$/, '');
+  return w;
+}
+
+/** Stemmed content-token set of a free-form text. Pure. */
+export function landmarkTokenSet(text) {
+  return new Set(
+    String(text || '').toLowerCase().normalize('NFC').split(/[^a-zäöüß0-9]+/i)
+      .map(stemLandmarkToken)
+      .filter((w) => w.length > 2 && !LANDMARK_TOKEN_STOPWORDS.has(w)),
+  );
+}
+
+/**
+ * Multi-word alias token sets → landmark index, most specific first.
+ * Single-word aliases stay on exact/containment (less noise).
+ */
+const TOKEN_SET_INDEX = (() => {
+  const entries = [];
+  WORLD_LANDMARKS.forEach((mark, index) => {
+    const seen = new Set();
+    for (const alias of [mark.name, ...(mark.aliases || [])]) {
+      const tokens = landmarkTokenSet(alias);
+      if (tokens.size < 2) continue;
+      const key = [...tokens].sort().join(' ');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push({ tokens, size: tokens.size, index });
+    }
+  });
+  entries.sort((a, b) => b.size - a.size);
+  return entries;
+})();
+
 /**
  * Normalize a query for landmark matching: lowercase, trim, collapse
  * whitespace, strip leading articles and trailing direction words.
@@ -221,7 +276,20 @@ export function findWorldLandmark(query) {
     if (key.length < 4) continue;
     if (norm.includes(key)) return pickLandmark(index);
   }
-  // 4. description keywords: EVERY keyword of any group must appear
+  // 4. stemmed token-set containment ("helikopter landeplatz beim weissen
+  // haus" contains {weiss, haus} → White House). Most specific alias first;
+  // multi-word aliases only, so single shared tokens can't misfire.
+  const queryTokens = landmarkTokenSet(norm);
+  if (queryTokens.size >= 2) {
+    for (const { tokens, index } of TOKEN_SET_INDEX) {
+      let hit = true;
+      for (const token of tokens) {
+        if (!queryTokens.has(token)) { hit = false; break; }
+      }
+      if (hit) return pickLandmark(index);
+    }
+  }
+  // 5. description keywords: EVERY keyword of any group must appear
   // ("das frühwarnsystem in australien mit den kuppeln" → Pine Gap).
   for (const { words, index } of KEYWORD_INDEX) {
     if (words.every((w) => norm.includes(w))) return pickLandmark(index);

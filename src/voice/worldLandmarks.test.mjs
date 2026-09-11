@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   findWorldLandmark,
+  landmarkTokenSet,
   normalizeLandmarkText,
+  stemLandmarkToken,
   WORLD_LANDMARKS,
   worldLandmarkAliasDict,
   worldLandmarkCoordDict,
@@ -60,6 +62,30 @@ test('early-warning descriptions resolve to Pine Gap', () => {
   // Single keywords alone must NOT match (needs the full description).
   assert.equal(findWorldLandmark('Australien'), null);
   assert.equal(findWorldLandmark('Alice Springs'), null);
+});
+
+test('declined German forms resolve to the same landmark', () => {
+  // The reported failure: "helikopter landeplatz beim weissen haus".
+  assert.equal(
+    findWorldLandmark('markiere den helikopter landeplatz beim weissen haus')?.name,
+    'White House, Washington DC',
+  );
+  assert.equal(findWorldLandmark('beim weissen haus')?.name, 'White House, Washington DC');
+  assert.equal(findWorldLandmark('das weisse haus in washington')?.name, 'White House, Washington DC');
+  assert.equal(findWorldLandmark('zum kölner dom')?.name, 'Cologne Cathedral');
+  assert.equal(findWorldLandmark('beim eiffelturm in paris')?.name, 'Eiffel Tower, Paris');
+  // ...but shared single tokens must not misfire.
+  assert.equal(findWorldLandmark('das tor'), null);
+  assert.equal(findWorldLandmark('grossen see'), null);
+  assert.equal(findWorldLandmark('Australien'), null);
+});
+
+test('stemming folds umlauts and adjective endings consistently', () => {
+  assert.equal(stemLandmarkToken('weisses'), stemLandmarkToken('weissen'));
+  assert.equal(stemLandmarkToken('weißen'), stemLandmarkToken('weisses'));
+  assert.equal(stemLandmarkToken('Kölner'), stemLandmarkToken('koelner'));
+  assert.equal(stemLandmarkToken('großen'), stemLandmarkToken('grosse'));
+  assert.ok(landmarkTokenSet('beim weissen Haus').has('weiss'));
 });
 
 test('dict helpers stay consistent with the registry', () => {
