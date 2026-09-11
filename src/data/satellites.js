@@ -1899,6 +1899,19 @@ const satellitesLayer = {
           break;
         }
       }
+      if (noradId === null) {
+        // Space-insensitive fallback: "SAT GUS" must match a "SATGUS" (or
+        // vice versa) catalog name — TLE naming is inconsistent here.
+        const compact = lower.replace(/\s+/g, '');
+        if (compact !== lower) {
+          for (const [id, sat] of _catalog) {
+            if (sat.name.toLowerCase().replace(/\s+/g, '').includes(compact)) {
+              noradId = id;
+              break;
+            }
+          }
+        }
+      }
     }
     if (noradId === null) return null;
 

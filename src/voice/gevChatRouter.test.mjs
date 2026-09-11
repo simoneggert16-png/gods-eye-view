@@ -4,12 +4,17 @@ import {
   buildPlaceFixMessage,
   buildRouterHistory,
   buildRouterMessage,
+  extractDegenerateRouterCall,
   extractDirectAnswer,
+  extractFirstJsonObject,
   extractPlaceFix,
   extractRouterCall,
   hasReferenceWords,
+  isCompleteRouterCall,
   ROUTER_SYSTEM_PROMPT,
+  ROUTER_TOOL_NAMES,
   ROUTER_TOOLS,
+  synthRouterSay,
 } from './gevChatRouter.js';
 
 test('extractDirectAnswer extracts plain text, json say/answer, and skips tool calls or unknowns', () => {
@@ -108,6 +113,43 @@ test('router prompt routes entities to tracking and show+draw to annotate', () =
   assert.ok(ROUTER_SYSTEM_PROMPT.includes('Joint Defence Facility Pine Gap'), 'Pine Gap example guides Ollama');
   assert.ok(ROUTER_SYSTEM_PROMPT.includes('flyTo: true'), 'show+draw combo uses one annotate call');
   assert.ok(ROUTER_TOOLS.some((line) => line.startsWith('track_entity') && line.includes('SATGUS')));
+});
+
+test('router calls survive small-model format drift', () => {
+  // {"type": ...} instead of {"name": ..., "args": {...}}
+  assert.deepEqual(
+    extractRouterCall('```json { "type": "track_entity", "query": "Mark Rober Satellite" } ```'),
+    { name: 'track_entity', args: { query: 'Mark Rober Satellite' }, say: '' },
+  );
+  // Two JSON objects: the FIRST call wins, the parse must not span both.
+  const two = extractRouterCall('```json { "type": "track_entity", "query": "Mark Rober Satellite" } ``` ```json { "type": "fly_to_location", "query": "Area 51" } ```');
+  assert.equal(two?.name, 'track_entity');
+  assert.deepEqual(two?.args, { query: 'Mark Rober Satellite' });
+  // Balanced scan ignores braces inside strings.
+  assert.equal(extractFirstJsonObject('x {"a": "} {"} y'), '{"a": "} {"}');
+  assert.equal(extractFirstJsonObject('no braces'), null);
+  assert.equal(extractFirstJsonObject('{"open": true'), null);
+  // Degenerate bare-tool format: `fly_to_location { ... }`
+  assert.deepEqual(
+    extractDegenerateRouterCall('``` \nfly_to_location\n{ "query": "Jervis Bay", "viewMode": "close" }\n```'),
+    { name: 'fly_to_location', args: { query: 'Jervis Bay', viewMode: 'close' }, say: '' },
+  );
+  assert.equal(extractDegenerateRouterCall('just prose, no tool'), null);
+  assert.equal(ROUTER_TOOL_NAMES.length, 28);
+  assert.ok(ROUTER_TOOL_NAMES.includes('track_entity'));
+});
+
+test('incomplete brain calls are rejected before execution', () => {
+  assert.equal(isCompleteRouterCall('fly_to_location', {}), false);
+  assert.equal(isCompleteRouterCall('fly_to_location', { query: 'Paris' }), true);
+  assert.equal(isCompleteRouterCall('fly_to_location', { latitude: 48.8, longitude: 2.3 }), true);
+  assert.equal(isCompleteRouterCall('track_entity', {}), false);
+  assert.equal(isCompleteRouterCall('track_entity', { query: 'SATGUS' }), true);
+  assert.equal(isCompleteRouterCall('annotate_map', {}), false);
+  assert.equal(isCompleteRouterCall('annotate_map', { annotations: [{ type: 'area', target: 'Pine Gap' }] }), true);
+  assert.equal(synthRouterSay('track_entity', { query: 'SATGUS' }, 'de'), 'Verfolge SATGUS.');
+  assert.equal(synthRouterSay('fly_to_location', { query: 'Jervis Bay' }, 'de'), 'Fliege nach Jervis Bay.');
+  assert.equal(synthRouterSay('fly_to_location', { query: 'Paris' }, 'en'), 'Flying to Paris.');
 });
 
 test('reference words catch pronouns, never real names', () => {

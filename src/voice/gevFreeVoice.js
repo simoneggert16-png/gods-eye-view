@@ -25,7 +25,7 @@
  * @module voice/gevFreeVoice
  */
 
-import { buildPlaceFixMessage, buildRouterMessage, extractDirectAnswer, extractPlaceFix, extractRouterCall, hasReferenceWords, ROUTER_SYSTEM_PROMPT, ROUTER_VISION_ADDENDUM } from './gevChatRouter.js';
+import { buildPlaceFixMessage, buildRouterMessage, extractDegenerateRouterCall, extractDirectAnswer, extractPlaceFix, extractRouterCall, hasReferenceWords, isCompleteRouterCall, ROUTER_SYSTEM_PROMPT, ROUTER_VISION_ADDENDUM, synthRouterSay } from './gevChatRouter.js';
 import { stableActionKey } from './gevGemini.js';
 
 /** Tool-call layer ids, mirroring the set_layer_visibility enum. */
@@ -86,7 +86,7 @@ const GERMAN_MARKER = /flieg|bring|mich|nach|zeige|mir|schalte|ein|aus|ansicht|�
  * Mirror of TRACK_FAMILY_WORDS in gevActions.js — kept local so the pure
  * parser stays dependency-free.
  */
-const ENTITY_FAMILY_WORDS = /\b(satellit\w*|satellite\w*|satgus|norad|tle|orbit\w*|raumstation|space station|iss|hst|jwst|tiangong|hubble|webb|schiff\w*|ship\w*|vessel\w*|boot\w*|boat\w*|tanker|frachter|container\w*|fähre|faehre|ferry|kreuzfahrt|yacht|mmsi|flugzeug\w*|aircraft|plane\w*|flieger|jet\w*|hubschrauber|helicopter|heli|flight\w*|callsign|icao|militär\w*|militaer\w*|military|kampfjet\w*|fighter\w*)\b/;
+const ENTITY_FAMILY_WORDS = /\b(satellit\w*|satelit\w*|satellite\w*|sat\s*gus|satgus|norad|tle|orbit\w*|raumstation|space station|iss|hst|jwst|tiangong|hubble|webb|schiff\w*|ship\w*|vessel\w*|boot\w*|boat\w*|tanker|frachter|container\w*|fähre|faehre|ferry|kreuzfahrt|yacht|mmsi|flugzeug\w*|aircraft|plane\w*|flieger|jet\w*|hubschrauber|helicopter|heli|flight\w*|callsign|icao|militär\w*|militaer\w*|military|kampfjet\w*|fighter\w*)\b/;
 
 function resolveLayerId(text) {
   for (const [id, re] of FREE_VOICE_LAYERS) {
@@ -1229,11 +1229,25 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
         if (response && response.status !== 503) {
           const data = await response?.json?.().catch(() => null);
           const routed = extractRouterCall(data?.answer);
-          if (routed && routed.name) {
+          if (routed && routed.name && isCompleteRouterCall(routed.name, routed.args)) {
             logTurn(brain.who, routed.say || text);
             return executeCalls(
               [{ name: routed.name, args: routed.args }],
               routed.say || text,
+              lang,
+              { routed: true },
+            );
+          }
+          // Degenerate pseudo-format ("fly_to_location {...}", bare tool +
+          // JSON): synthesize the call with a clean confirmation instead of
+          // leaking raw syntax into the chat.
+          const degenerate = routed?.name ? null : extractDegenerateRouterCall(data?.answer);
+          if (degenerate && isCompleteRouterCall(degenerate.name, degenerate.args)) {
+            const say = synthRouterSay(degenerate.name, degenerate.args, lang);
+            logTurn(brain.who, say);
+            return executeCalls(
+              [{ name: degenerate.name, args: degenerate.args }],
+              say,
               lang,
               { routed: true },
             );
@@ -1515,6 +1529,28 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       const retried = await retryFlyWithBrain(calls[0].args, lang);
       if (retried) return retried;
     }
+    // Local cross-tool fallback: a failed place flight whose query names a
+    // trackable family ("SAT GUS", "die ISS") was the WRONG TOOL — a satellite
+    // is not a place. Retry as track_entity directly, no brain needed.
+    if (outcomes.length === 1
+      && outcomes[0].name === 'fly_to_location'
+      && outcomes[0].ok === false
+      && ENTITY_FAMILY_WORDS.test(` ${String(calls[0].args?.query || '').toLowerCase()} `)) {
+      const entityQuery = String(calls[0].args.query).trim();
+      try {
+        const result = await runner('track_entity', { query: entityQuery });
+        if (result?.ok !== false) {
+          const speech = lang === 'de' ? `Verfolge ${entityQuery}.` : `Tracking ${entityQuery}.`;
+          state.lastResult = { ok: true, speech, outcomes: [{ name: 'track_entity', ok: true, result }], retriedFrom: entityQuery };
+          setDetail(speech);
+          speak(speech, lang);
+          logTurn('app', speech, [{ name: 'track_entity', ok: true }]);
+          return state.lastResult;
+        }
+      } catch {
+        /* fall through to the brain paths below */
+      }
+    }
     // AI second chance: a lone annotate_map that could not place its target
     // gets one brain-corrected retry (hallucinated phrase → canonical name).
     if (outcomes.length === 1
@@ -1583,7 +1619,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       const data = await response?.json?.().catch(() => null);
       const routed = extractRouterCall(data?.answer);
       if (!routed || routed.unknown) continue; // chit-chat stays honest, next brain may still map it
-      if (!routed.name) continue;
+      if (!routed.name || !isCompleteRouterCall(routed.name, routed.args)) continue; // empty-args envelope
       if (excluded.has(stableActionKey(routed.name, routed.args))) continue; // never loop the same dead call
       const say = routed.say || '';
       return executeCalls([{ name: routed.name, args: routed.args }], say, lang, { routed: true });

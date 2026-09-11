@@ -249,7 +249,7 @@ const TRACKABLE_ALIASES = [
  * yourself" for something it can enable in the same breath.
  */
 const TRACK_FAMILY_WORDS = [
-  { layerId: 'satellites', re: /\b(satellit(en|es)?|satellite(s)?|satgus|norad|tle|orbit|orbits|raumstation|space station|iss|hst|jwst|tiangong|hubble|webb)\b/i },
+  { layerId: 'satellites', re: /\b(satellit(en|es)?|satelit(en|es)?|satellite(s)?|satgus|norad|tle|orbit|orbits|raumstation|space station|iss|hst|jwst|tiangong|hubble|webb)\b/i },
   { layerId: 'ais-live-vessels', re: /\b(schiff(e|es|en)?|ship(s)?|vessel(s)?|boot(e|es|en)?|boat(s)?|tanker|frachter|container|fähre|faehre|ferry|kreuzfahrt|yacht|segel|mmsi)\b/i },
   { layerId: 'military', re: /\b(militär|militaer|military|kampfjet(s)?|fighter(s)?|bomber|abfangjäger|tarnkappen)\b/i },
   { layerId: 'flights', re: /\b(flugzeug(e|es|en)?|aircraft|plane(s)?|flieger|jet(s)?|hubschrauber|helicopter|heli|flug\b|flight(s)?|callsign|icao|airline|passagier)\b/i },

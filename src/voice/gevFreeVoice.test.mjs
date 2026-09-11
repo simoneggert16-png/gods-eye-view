@@ -699,6 +699,95 @@ test('failed annotation gets one AI-corrected retry', async () => {
   assert.match(result.speech, /Pine Gap/);
 });
 
+test('degenerate brain pseudo-format executes with a clean confirmation', async () => {
+  const fetchImpl = async () => ({
+    ok: true, status: 200,
+    json: async () => ({ answer: '``` \nfly_to_location\n{ "query": "Jervis Bay", "viewMode": "close" }\n```', blocked: false, error: null }),
+  });
+  const ran = [];
+  const seen = [];
+  const controller = createFreeVoiceController({
+    announce: false,
+    ui: { detail: { textContent: '' } },
+    fetchImpl,
+    runner: async (name, args) => {
+      if (name === 'get_current_view_state' || name === 'get_entity_context') return { ok: true };
+      ran.push([name, args]);
+      return { ok: true, action: name };
+    },
+    log: { push: (who, text) => seen.push([who, text]), list: () => [] },
+  });
+  const result = await controller.handleChatText('zoome in den grossen see rein');
+  assert.equal(result.ok, true);
+  assert.deepEqual(ran, [['fly_to_location', { query: 'Jervis Bay', viewMode: 'close' }]]);
+  assert.ok(seen.every(([, text]) => !text.includes('```')), 'no raw syntax leaks into the log');
+  assert.ok(seen.some(([, text]) => /Jervis Bay/.test(text)), 'clean confirmation names the place');
+});
+
+test('type-shaped brain answer tracks the satellite, first call wins', async () => {
+  const fetchImpl = async () => ({
+    ok: true, status: 200,
+    json: async () => ({ answer: '```json { "type": "track_entity", "query": "Mark Rober Satellite" } ``` ```json { "type": "fly_to_location", "query": "Area 51" } ```', blocked: false, error: null }),
+  });
+  const ran = [];
+  const controller = createFreeVoiceController({
+    announce: false,
+    ui: { detail: { textContent: '' } },
+    fetchImpl,
+    runner: async (name, args) => {
+      if (name === 'get_current_view_state' || name === 'get_entity_context') return { ok: true };
+      ran.push([name, args]);
+      return { ok: true, action: name };
+    },
+    log: { push: () => {}, list: () => [] },
+  });
+  const result = await controller.handleChatText('zeig mir mark robers satellit und seine umlaufbahn');
+  assert.equal(result.ok, true);
+  assert.deepEqual(ran, [['track_entity', { query: 'Mark Rober Satellite' }]]);
+});
+
+test('empty-args brain envelope never executes', async () => {
+  const fetchImpl = async () => ({
+    ok: true, status: 200,
+    json: async () => ({ answer: '{"name": "fly_to_location", "args": {}}', blocked: false, error: null }),
+  });
+  const ran = [];
+  const controller = createFreeVoiceController({
+    announce: false,
+    ui: { detail: { textContent: '' } },
+    fetchImpl,
+    runner: async (name, args) => {
+      if (name === 'get_current_view_state' || name === 'get_entity_context') return { ok: true };
+      ran.push([name, args]);
+      return { ok: false, action: name, error: 'should not run' };
+    },
+    log: { push: () => {}, list: () => [] },
+  });
+  await controller.handleChatText('zeige mir irgendwo irgendwas');
+  assert.ok(ran.every(([name, args]) => !(name === 'fly_to_location' && Object.keys(args || {}).length === 0)), 'no empty fly call');
+});
+
+test('failed place flight with satellite words retries as tracking', async () => {
+  const fetchImpl = async () => ({ ok: false, status: 503, json: async () => null });
+  const ran = [];
+  const controller = createFreeVoiceController({
+    announce: false,
+    ui: { detail: { textContent: '' } },
+    fetchImpl,
+    runner: async (name, args) => {
+      if (name === 'get_current_view_state' || name === 'get_entity_context') return { ok: true };
+      ran.push([name, args.query]);
+      if (name === 'fly_to_location') return { ok: false, action: name, error: 'Place "SAT GUS" not found' };
+      return { ok: true, action: name, label: 'SATGUS' };
+    },
+    log: { push: () => {}, list: () => [] },
+  });
+  const result = await controller.handleText('zeige mir SAT GUS');
+  assert.equal(result.ok, true);
+  assert.deepEqual(ran, [['fly_to_location', 'sat gus'], ['track_entity', 'sat gus']]);
+  assert.match(result.speech, /Verfolge|Tracking/);
+});
+
 test('failed regex command gets one AI reinterpretation, never a loop', async () => {
   const posted = [];
   const fetchImpl = async (url, init) => {
@@ -712,8 +801,11 @@ test('failed regex command gets one AI reinterpretation, never a loop', async ()
     fetchImpl,
     runner: async (name, args) => {
       ran.push([name, JSON.stringify(args)]);
-      // Simulate the old stupid path: geocoding the whole sentence fails.
+      // Simulate the old stupid path: geocoding the whole sentence fails, and
+      // no catalog object matches the gibberish either — so the AI
+      // reinterpretation still gets its chance after the entity fallback.
       if (name === 'fly_to_location') return { ok: false, action: name, error: 'Place "irgendein militärflugzeug" not found' };
+      if (name === 'track_entity') return { ok: false, action: name, error: 'Nothing matched' };
       return { ok: true, action: name };
     },
     log: { push: () => {}, list: () => [{ who: 'you', text: 'zeige mir irgendein militärflugzeug' }] },

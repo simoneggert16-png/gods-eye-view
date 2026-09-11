@@ -167,7 +167,10 @@ export function extractPlaceFix(answer) {
 }
 /**
  * Extract a routed tool call from brain output. Tolerates prose around the
- * JSON and code fences; strict on shape afterwards.
+ * JSON and code fences; strict on shape afterwards. Only the FIRST balanced
+ * {...} object is parsed, so multi-call ramblings execute the first call
+ * instead of failing the whole parse. Also accepts {"type": "<tool>", ...}
+ * (small models write "type" instead of "name" with top-level args).
  *
  * @param {unknown} answer - Raw brain text.
  * @returns {{name:string,args:object,say:string}|{unknown:true}|null}
@@ -176,20 +179,161 @@ export function extractPlaceFix(answer) {
 export function extractRouterCall(answer) {
   if (typeof answer !== 'string') return null;
   const cleaned = answer.replace(/```(?:json)?/gi, '').trim();
-  const start = cleaned.indexOf('{');
-  const end = cleaned.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
+  const slice = extractFirstJsonObject(cleaned);
+  if (!slice) return null;
   let parsed = null;
   try {
-    parsed = JSON.parse(cleaned.slice(start, end + 1));
+    parsed = JSON.parse(slice);
   } catch {
     return null;
   }
   if (!parsed || typeof parsed !== 'object') return null;
   if (parsed.unknown === true) return { unknown: true };
-  if (typeof parsed.name !== 'string' || !/^[a-z_]{3,40}$/.test(parsed.name)) return null;
-  const args = parsed.args && typeof parsed.args === 'object' && !Array.isArray(parsed.args) ? parsed.args : {};
-  return { name: parsed.name, args, say: typeof parsed.say === 'string' ? parsed.say.slice(0, 200) : '' };
+  const rawName = typeof parsed.name === 'string' ? parsed.name
+    : (typeof parsed.type === 'string' ? parsed.type : '');
+  if (!/^[a-z_]{3,40}$/.test(rawName)) return null;
+  let args = parsed.args && typeof parsed.args === 'object' && !Array.isArray(parsed.args) ? parsed.args : null;
+  if (!args) {
+    // {"type": "track_entity", "query": "X"} → args are the top-level rest.
+    const { name: _name, type: _type, say: _say, unknown: _unknown, ...rest } = parsed;
+    args = rest;
+  }
+  return { name: rawName, args, say: typeof parsed.say === 'string' ? parsed.say.slice(0, 200) : '' };
+}
+
+/**
+ * Known tool names, derived from the menu (each line starts with `name {...}`).
+ * Used to spot degenerate pseudo-format calls like
+ * `fly_to_location { "query": "Jervis Bay" }` that small models emit instead
+ * of the {"name","args"} envelope.
+ */
+export const ROUTER_TOOL_NAMES = Object.freeze(ROUTER_TOOLS.map((line) => String(line).split(' ')[0]));
+
+/**
+ * Extract the first balanced {...} object starting at or after fromIndex.
+ * String-aware, so braces inside quoted text don't unbalance the scan.
+ *
+ * @param {string} text
+ * @param {number} [fromIndex]
+ * @returns {string|null} The object slice, or null when unbalanced/absent.
+ */
+export function extractFirstJsonObject(text, fromIndex = 0) {
+  const s = String(text || '');
+  const start = s.indexOf('{', fromIndex < 0 ? 0 : fromIndex);
+  if (start < 0) return null;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < s.length; i += 1) {
+    const ch = s[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+    } else if (ch === '"') {
+      inStr = true;
+    } else if (ch === '{') {
+      depth += 1;
+    } else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return s.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+/**
+ * Fallback for degenerate brain output: a bare tool name followed by a JSON
+ * args object (`fly_to_location { "query": "Jervis Bay" }`), which
+ * extractRouterCall rejects (no "name" envelope). Returns the call with an
+ * empty say — callers synthesize a clean confirmation via synthRouterSay so
+ * the raw pseudo-syntax never reaches the chat log.
+ *
+ * @param {unknown} answer - Raw brain text.
+ * @returns {{name:string,args:object,say:string}|null}
+ */
+export function extractDegenerateRouterCall(answer) {
+  if (typeof answer !== 'string') return null;
+  const cleaned = answer.replace(/```(?:json)?/gi, ' ');
+  let best = null;
+  for (const tool of ROUTER_TOOL_NAMES) {
+    const at = cleaned.search(new RegExp(`\\b${tool}\\b`));
+    if (at >= 0 && (!best || at < best.index)) best = { tool, index: at };
+  }
+  if (!best) return null;
+  const slice = extractFirstJsonObject(cleaned, best.index);
+  if (!slice) return null;
+  try {
+    const parsed = JSON.parse(slice);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    return { name: best.tool, args: parsed, say: '' };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Completeness check for a routed call: the brain sometimes emits a valid
+ * envelope with EMPTY args ({"name":"fly_to_location","args":{}}), which
+ * would otherwise execute and throw "needs a locationId...". Incomplete
+ * calls are treated as unparseable (next brain / honest fallback).
+ *
+ * @param {string} name - Tool name.
+ * @param {object} [args] - Tool args.
+ * @returns {boolean} True when the call carries what the tool needs.
+ */
+export function isCompleteRouterCall(name, args = {}) {
+  const a = args && typeof args === 'object' ? args : {};
+  const str = (v) => (typeof v === 'string' ? v.trim() : '');
+  const num = (v) => Number.isFinite(Number(v)) && String(v).trim() !== '';
+  switch (name) {
+    case 'fly_to_location':
+      return Boolean(str(a.locationId) || str(a.query) || (num(a.latitude) && num(a.longitude)));
+    case 'track_entity':
+      return Boolean(str(a.query));
+    case 'annotate_map': {
+      const list = Array.isArray(a.annotations) ? a.annotations : [];
+      return list.length > 0 || Boolean(str(a.target) || str(a.query) || str(a.location) || str(a.place));
+    }
+    case 'adjust_camera_zoom':
+      return Boolean(str(a.direction));
+    case 'move_camera':
+      return Boolean(str(a.motion));
+    case 'set_layer_visibility':
+      return Boolean(str(a.layerId));
+    case 'set_visual_style':
+      return Boolean(str(a.style));
+    default:
+      return true;
+  }
+}
+
+/**
+ * Clean spoken confirmation for a synthesized (degenerate-format) call, so
+ * the raw pseudo-syntax never reaches speech or the chat log.
+ *
+ * @param {string} name - Tool name.
+ * @param {object} [args] - Tool args.
+ * @param {string} [lang] - 'de' or 'en'.
+ * @returns {string} Short confirmation in the user language.
+ */
+export function synthRouterSay(name, args = {}, lang = 'en') {
+  const de = lang === 'de';
+  const a = args && typeof args === 'object' ? args : {};
+  const q = (v) => String(v ?? '').trim().slice(0, 80);
+  if (name === 'track_entity' && q(a.query)) {
+    return de ? `Verfolge ${q(a.query)}.` : `Tracking ${q(a.query)}.`;
+  }
+  if (name === 'fly_to_location') {
+    const where = q(a.query) || q(a.locationId)
+      || (Number.isFinite(Number(a.latitude)) ? `${a.latitude}, ${a.longitude}` : '');
+    if (where) return de ? `Fliege nach ${where}.` : `Flying to ${where}.`;
+  }
+  if (name === 'annotate_map') {
+    const target = q(a.annotations?.[0]?.target) || q(a.target);
+    if (target) return de ? `Zeichne ${target} ein.` : `Marking ${target}.`;
+  }
+  return de ? 'Verstanden, wird ausgeführt.' : 'On it.';
 }
 
 /**
@@ -205,13 +349,14 @@ export function extractDirectAnswer(answer) {
   const text = answer.trim();
   if (!text) return '';
   const cleaned = text.replace(/```(?:json)?/gi, '').trim();
-  const start = cleaned.indexOf('{');
-  const end = cleaned.lastIndexOf('}');
-  if (start >= 0 && end > start) {
+  const slice = extractFirstJsonObject(cleaned);
+  if (slice) {
     try {
-      const parsed = JSON.parse(cleaned.slice(start, end + 1));
+      const parsed = JSON.parse(slice);
       if (parsed?.unknown === true) return '';
-      if (typeof parsed?.name === 'string' && /^[a-z_]{3,40}$/.test(parsed.name)) return '';
+      const rawName = typeof parsed?.name === 'string' ? parsed.name
+        : (typeof parsed?.type === 'string' ? parsed.type : '');
+      if (/^[a-z_]{3,40}$/.test(rawName || '')) return '';
       if (typeof parsed?.say === 'string' && parsed.say.trim()) return parsed.say.trim();
       if (typeof parsed?.answer === 'string' && parsed.answer.trim()) return parsed.answer.trim();
       if (typeof parsed?.text === 'string' && parsed.text.trim()) return parsed.text.trim();
