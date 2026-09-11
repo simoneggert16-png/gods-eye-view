@@ -3,12 +3,37 @@ import assert from 'node:assert/strict';
 import {
   buildRouterHistory,
   buildRouterMessage,
+  extractDirectAnswer,
   extractPlaceFix,
   extractRouterCall,
   hasReferenceWords,
   ROUTER_SYSTEM_PROMPT,
   ROUTER_TOOLS,
 } from './gevChatRouter.js';
+
+test('extractDirectAnswer extracts plain text, json say/answer, and skips tool calls or unknowns', () => {
+  assert.equal(
+    extractDirectAnswer('Die Farbe kommt vom flachen Wasser der Bahama-Bänke.'),
+    'Die Farbe kommt vom flachen Wasser der Bahama-Bänke.',
+  );
+  assert.equal(
+    extractDirectAnswer('{"say": "Turquoise Wasser zeigt flache Gewässer an."}'),
+    'Turquoise Wasser zeigt flache Gewässer an.',
+  );
+  assert.equal(
+    extractDirectAnswer('```json\n{"answer": "Das ist Korallensand."}\n```'),
+    'Das ist Korallensand.',
+  );
+  // Tool calls must NOT be treated as direct text answers:
+  assert.equal(
+    extractDirectAnswer('{"name": "fly_to_location", "args": {"query": "Miami"}, "say": "Fliege hin"}'),
+    '',
+  );
+  // Explicit unknown must NOT be treated as direct text answers:
+  assert.equal(extractDirectAnswer('{"unknown": true}'), '');
+  assert.equal(extractDirectAnswer(''), '');
+  assert.equal(extractDirectAnswer(null), '');
+});
 
 test('router prompt carries the tool menu', () => {
   assert.ok(ROUTER_SYSTEM_PROMPT.includes('fly_to_location'));

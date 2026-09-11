@@ -25,7 +25,7 @@
  * @module voice/gevFreeVoice
  */
 
-import { buildPlaceFixMessage, buildRouterMessage, extractPlaceFix, extractRouterCall, hasReferenceWords, ROUTER_SYSTEM_PROMPT, ROUTER_VISION_ADDENDUM } from './gevChatRouter.js';
+import { buildPlaceFixMessage, buildRouterMessage, extractDirectAnswer, extractPlaceFix, extractRouterCall, hasReferenceWords, ROUTER_SYSTEM_PROMPT, ROUTER_VISION_ADDENDUM } from './gevChatRouter.js';
 import { stableActionKey } from './gevGemini.js';
 
 /** Tool-call layer ids, mirroring the set_layer_visibility enum. */
@@ -749,7 +749,7 @@ export function parseFreeVoiceCommand(input) {
   // asks are chat, even as statements (the text box is a chat surface).
   // NOTE: `text` is space-padded, so start-anchored (^) patterns never match
   // here — use (?:^|\s) for leading words.
-  if (/\?|(?:^|\s)(who|what|when|where|why|how|which|wer|was|wo|wann|warum|wie|weshalb|welche[rnsm]?|tell me|erzähle? mir|explain|erkläre?)\b/.test(text)) {
+  if (/\?|(?:^|\s)(who|what|when|where|why|how|which|wer|was|wo|wann|warum|wieso|weshalb|weswegen|wozu|worum|woran|worüber|womit|wie|welche[rnsm]?|tell me|erzähle? mir|explain|erkläre?|sag mir|zeig mir)\b/.test(text)) {
     return { calls: [], geminiQuestion: raw, speech: '', lang };
   }
 
@@ -1059,17 +1059,19 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
    * Returns { handled } — a 503 (key missing) or dead network means "next
    * brain in the chain", everything else is handled here, honestly.
    */
-  async function askChatBrain({ endpoint, who, lang = 'en', message, context }) {
+  async function askChatBrain({ endpoint, who, lang = 'en', message, context, image = null }) {
     const de = lang === 'de';
     const say = (en, german) => (de ? german : en);
     if (!doFetch) return { handled: false };
     setDetail(say('ASKING THE CHAT BRAIN…', 'FRAGE DIE CHAT-KI…'));
     let response = null;
     try {
+      const payload = { message: String(message || '').slice(0, 1000), context: String(context || '').slice(0, 1500) };
+      if (image) payload.images = [image];
       response = await doFetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: String(message || '').slice(0, 1000), context: String(context || '').slice(0, 1500) }),
+        body: JSON.stringify(payload),
       });
     } catch {
       response = null;
@@ -1111,11 +1113,17 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
    */
   async function chatWithBrain(question, lang = 'en') {
     const context = await readContextText();
+    let image = null;
+    try {
+      image = typeof captureViewport === 'function' ? await captureViewport() : null;
+    } catch {
+      image = null;
+    }
     for (const brain of [
       { endpoint: '/api/zai/chat', who: 'zai' },
       { endpoint: '/api/ollama/chat', who: 'ollama' },
     ]) {
-      const attempt = await askChatBrain({ ...brain, lang, message: question, context });
+      const attempt = await askChatBrain({ ...brain, lang, message: question, context, image });
       if (attempt.handled) return attempt.result;
     }
     return askGemini(question, lang);
@@ -1177,8 +1185,8 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
               { routed: true },
             );
           }
-          // Visible questions get a plain-text answer straight from the model.
-          const direct = !routed && typeof data?.answer === 'string' ? data.answer.trim() : '';
+          // Direct answers to questions (visual phenomena, geography, colors, etc.) from the model.
+          const direct = extractDirectAnswer(data?.answer);
           if (response.ok && direct) {
             state.lastResult = { ok: true, speech: direct, answer: direct };
             setDetail(direct);

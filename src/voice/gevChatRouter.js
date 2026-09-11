@@ -57,13 +57,14 @@ export const ROUTER_TOOLS = Object.freeze([
 
 /** System prompt for routing turns. */
 export const ROUTER_SYSTEM_PROMPT = [
-  'You translate one user utterance into exactly ONE map-tool call for a 3D-globe app.',
+  'You translate user utterances for a live 3D globe app into map-tool calls or direct answers.',
   'Use the conversation history to resolve pronouns and references ("seine Insel", "dorthin", "it", "there") to the real place or thing meant.',
-  'Pick the single best tool from the menu. Prefer navigation with a real place name over relative moves when a place is meant.',
+  '1. MAP ACTIONS: Pick the single best tool from the menu. Prefer navigation with a real place name over relative moves when a place is meant.',
   'When the user asks to draw, outline, or show boundaries of any place, country, state, region, city, or address (e.g. "zeichne ... ein", "umrande ...", "outline ..."), ALWAYS use annotate_map with type: "area".',
   '"Zoom into X / zoome in X rein" with a named or previously mentioned place means fly_to_location with viewMode close, not a relative nudge.',
-  'Answer with ONLY a JSON object, no other text: {"name": "<tool>", "args": {...}, "say": "<short confirmation in the user language>"}',
-  'If it is chit-chat, a question with no map action, or unmappable, answer exactly: {"unknown": true}',
+  'For map actions, answer with ONLY a JSON object, no other text: {"name": "<tool>", "args": {...}, "say": "<short confirmation in the user language>"}',
+  '2. QUESTIONS: If the user asks a question (e.g. why something has a strange color, what is visible, why water looks turquoise/cyan vs deep blue, sandbanks, reefs, bathymetry, terrain, mountains, geography, or place facts), answer DIRECTLY IN HELPFUL PLAIN TEXT in the user\'s language (at most 3 short sentences, no JSON).',
+  '3. GIBBERISH: Only if an utterance is complete meaningless gibberish with neither an action nor a question, answer exactly: {"unknown": true}',
   'Tools:',
   ...ROUTER_TOOLS.map((line, index) => `${index + 1}. ${line}`),
 ].join('\n');
@@ -72,7 +73,7 @@ export const ROUTER_SYSTEM_PROMPT = [
  * Addendum for screenshot-attached routing: the model may answer visible
  * questions directly instead of emitting a tool call.
  */
-export const ROUTER_VISION_ADDENDUM = 'A screenshot of the current view is attached — you SEE the screen. If the user asks what is visible (see/describe/what building is that), answer DIRECTLY IN PLAIN TEXT describing the screenshot in at most three short sentences (no JSON). Tool calls remain for map actions.';
+export const ROUTER_VISION_ADDENDUM = 'A screenshot of the current view is attached — you SEE the screen. If the user asks what is visible or asks a question about the view, colors, water depth/bathymetry, landscape, geography, or why something looks a certain way (e.g. "wieso hat das so eine komische farbe", "warum ist das wasser türkis", "what is this place"), answer DIRECTLY IN HELPFUL PLAIN TEXT in the user\'s language (at most three short sentences, no JSON). Tool calls remain for map actions.';
 
 /**
  * Compress conversation entries into router history lines.
@@ -183,4 +184,35 @@ export function extractRouterCall(answer) {
   if (typeof parsed.name !== 'string' || !/^[a-z_]{3,40}$/.test(parsed.name)) return null;
   const args = parsed.args && typeof parsed.args === 'object' && !Array.isArray(parsed.args) ? parsed.args : {};
   return { name: parsed.name, args, say: typeof parsed.say === 'string' ? parsed.say.slice(0, 200) : '' };
+}
+
+/**
+ * Extract a human-readable plain-text answer from a brain response.
+ * Filters out JSON tool calls and explicit unknown markers, but extracts
+ * direct plain text or text enclosed in JSON answer fields.
+ *
+ * @param {unknown} answer - Raw brain text.
+ * @returns {string} Direct plain text answer or empty string.
+ */
+export function extractDirectAnswer(answer) {
+  if (typeof answer !== 'string') return '';
+  const text = answer.trim();
+  if (!text) return '';
+  const cleaned = text.replace(/```(?:json)?/gi, '').trim();
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try {
+      const parsed = JSON.parse(cleaned.slice(start, end + 1));
+      if (parsed?.unknown === true) return '';
+      if (typeof parsed?.name === 'string' && /^[a-z_]{3,40}$/.test(parsed.name)) return '';
+      if (typeof parsed?.say === 'string' && parsed.say.trim()) return parsed.say.trim();
+      if (typeof parsed?.answer === 'string' && parsed.answer.trim()) return parsed.answer.trim();
+      if (typeof parsed?.text === 'string' && parsed.text.trim()) return parsed.text.trim();
+      if (typeof parsed?.explanation === 'string' && parsed.explanation.trim()) return parsed.explanation.trim();
+    } catch {
+      // Not valid JSON, fall through to raw text
+    }
+  }
+  return text;
 }

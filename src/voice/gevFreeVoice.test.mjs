@@ -110,6 +110,9 @@ test('analyst questions become analyst_query; open questions route to Gemini', (
   const entity = parseFreeVoiceCommand("What's this?");
   assert.equal(entity.geminiQuestion, "What's this?");
 
+  const wieso = parseFreeVoiceCommand('wieso hat das so eine komische farbe im vergleich zum rest');
+  assert.equal(wieso.geminiQuestion, 'wieso hat das so eine komische farbe im vergleich zum rest');
+
   const noise = parseFreeVoiceCommand('blabla nonsense xyz');
   assert.ok(noise.unknown);
   assert.equal(noise.geminiQuestion, undefined);
