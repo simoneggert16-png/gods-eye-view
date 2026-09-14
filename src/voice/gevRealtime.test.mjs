@@ -16,7 +16,6 @@ import {
   isPushToTalkKey,
   probeGeminiVoiceKey,
   probeOpenAiVoiceKey,
-  resolveVoiceControlHint,
   resolveVoiceVisualizerSpeaker,
   selectVoiceVisualizerSignal,
   silenceRadioForVoice,
@@ -56,18 +55,6 @@ test('push-to-talk ignores typing targets and modified shortcuts', () => {
 test('mic clicks are ignored while Space is physically held', () => {
   assert.equal(shouldIgnoreVoiceButtonClick(true), true);
   assert.equal(shouldIgnoreVoiceButtonClick(false), false);
-});
-
-test('voice control help tray reflects the push-to-talk key state', () => {
-  assert.equal(
-    resolveVoiceControlHint(false, false),
-    'Hold Space to speak · click mic to toggle voice',
-  );
-  assert.equal(resolveVoiceControlHint(true, true), 'Release Space to send');
-  assert.equal(
-    resolveVoiceControlHint(true, false),
-    'Hold Space to speak · click mic to toggle voice',
-  );
 });
 
 test('voice visualizer reads assistant output while the assistant is speaking', () => {

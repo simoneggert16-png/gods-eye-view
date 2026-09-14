@@ -1,6 +1,6 @@
 import { createGevActionRunner, readLayerLifecycleSummary } from './gevActions.js';
 import { createFreeVoiceController, resumeGoogleTTSAudio } from './gevFreeVoice.js';
-import { attachConversationLog, createConversationLog, isVoiceHelpRetired, mirrorToServer } from './gevConversationLog.js';
+import { attachConversationLog, createConversationLog, mirrorToServer } from './gevConversationLog.js';
 import { createGeminiLiveController, createLiveAudioOutput } from './gevGeminiLive.js';import {
   DEFAULT_VOICE_TIER,
   VOICE_COST_LIMITS,
@@ -218,15 +218,6 @@ export function initGevVoiceCommands({ viewer, styleManager, dataManager, sceneD
   attachFreeVoiceTextInput(ui, freeVoice, liveVoice);
   // Attached AFTER the chat form so the LOG toggle can move into the form row.
   attachConversationLog(ui, conversationLog);
-  // Retire the "hold space" hover tooltip once the operator demonstrably
-  // knows voice control — otherwise it parks over the chat box forever.
-  const retireHelp = () => {
-    try {
-      if (isVoiceHelpRetired(conversationLog) && ui?.root) ui.root.dataset.helpRetired = 'true';
-    } catch { /* hint visibility never breaks voice */ }
-  };
-  retireHelp();
-  conversationLog.subscribe(() => retireHelp());
   // Server mirror: every turn also lands in .gev-logs/voice-conversations.jsonl
   // (localhost only) so the history survives and stays analyzable.
   mirrorToServer(conversationLog);
@@ -1724,12 +1715,6 @@ export class GevRealtimeController {
   updateVoiceButtonLabel() {
     if (!this.ui.buttonLabel) return;
     this.ui.buttonLabel.textContent = 'MIC';
-    if (this.ui.helpDetail) {
-      this.ui.helpDetail.textContent = resolveVoiceControlHint(
-        this.pushToTalkMode,
-        this.pushToTalkKeyHeld,
-      );
-    }
   }
 
   setVoiceSpeaker(speaker, { keepVisualizerSpeaker = false } = {}) {
@@ -2798,18 +2783,6 @@ export function resolveVoiceVisualizerSpeaker(currentSpeaker, nextSpeaker, keepC
 }
 
 /**
- * Resolves the in-app help tray copy for the current push-to-talk state.
- * @param {boolean} pushToTalkMode
- * @param {boolean} pushToTalkKeyHeld
- * @returns {string}
- */
-export function resolveVoiceControlHint(pushToTalkMode, pushToTalkKeyHeld) {
-  return pushToTalkMode && pushToTalkKeyHeld
-    ? 'Release Space to send'
-    : 'Hold Space to speak · click mic to toggle voice';
-}
-
-/**
  * Removes low-level room noise before it can animate the voice meter.
  * @param {number} level - Normalized frequency energy (0–1).
  * @param {number} threshold - Noise-floor cutoff (0–1).
@@ -2855,7 +2828,7 @@ function createVoiceControl({ reset = false } = {}) {
           <span id="gev-voice-cost-value" class="gev-voice-cost-value" data-level="ok" title="Estimated session cost">~$0.00</span>
         </div>
       </div>
-      <button id="gev-voice-button" type="button" aria-label="Voice control — hold Space to speak; click to toggle voice" aria-describedby="gev-voice-help">
+      <button id="gev-voice-button" type="button" aria-label="Voice control — hold Space to speak; click to toggle voice">
         <span class="gev-mic-orbit"><img src="/mic.svg" alt="" /></span>
         <span class="gev-mic-label">ON/OFF</span>
       </button>
@@ -2864,10 +2837,6 @@ function createVoiceControl({ reset = false } = {}) {
       </div>
       <div class="gev-voice-readout">
         <div id="gev-voice-detail">VOICE STANDBY</div>
-      </div>
-      <div id="gev-voice-help" class="gev-voice-help-tray" role="tooltip">
-        <span class="gev-voice-help-kicker">VOICE CONTROL</span>
-        <span class="gev-voice-help-detail">Hold Space to speak · click mic to toggle voice</span>
       </div>
       <div class="gev-voice-error-tray" role="alert" aria-live="assertive">
         <div class="gev-voice-error-header">
@@ -2901,7 +2870,6 @@ function createVoiceControl({ reset = false } = {}) {
     buttonLabel: root.querySelector('.gev-mic-label'),
     status: root.querySelector('#gev-voice-status'),
     detail: root.querySelector('#gev-voice-detail'),
-    helpDetail: root.querySelector('.gev-voice-help-detail'),
     errorDetail: root.querySelector('#gev-voice-error-detail'),
     tierButton: root.querySelector('#gev-voice-tier'),
     costValue: root.querySelector('#gev-voice-cost-value'),

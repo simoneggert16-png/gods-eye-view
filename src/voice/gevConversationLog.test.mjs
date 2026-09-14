@@ -6,7 +6,6 @@ import {
   CONVERSATION_LOG_STORAGE_KEY,
   copyConversationJson,
   createConversationLog,
-  isVoiceHelpRetired,
   mirrorToServer,
 } from './gevConversationLog.js';
 
@@ -132,18 +131,6 @@ test('drawer renders entries as text, never html', () => {
   const existing = fakeElement('div');
   const ui2 = { root: { querySelector: () => existing, append: () => { throw new Error('must not append twice'); } } };
   assert.equal(attachConversationLog(ui2, log, doc), existing);
-});
-
-test('voice help retires after a few real turns', () => {
-  const log = createConversationLog({ storage: memoryStorage() });
-  assert.equal(isVoiceHelpRetired(log), false);
-  assert.equal(isVoiceHelpRetired(null), false);
-  log.push('you', 'one');
-  log.push('app', 'two');
-  assert.equal(isVoiceHelpRetired(log), false);
-  log.push('gemini', 'three');
-  assert.equal(isVoiceHelpRetired(log), true);
-  assert.equal(isVoiceHelpRetired(log, 99), false);
 });
 
 test('log toggle moves into the chat bar when present', () => {

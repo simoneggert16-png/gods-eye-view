@@ -22,21 +22,6 @@ export const CONVERSATION_LOG_PERSIST_LIMIT = 50;
 /** Storage key for the persisted tail. */
 export const CONVERSATION_LOG_STORAGE_KEY = 'godsEyeView.voice.conversation';
 
-/** Turns after which the "hold space" helper has served its purpose. */
-export const VOICE_HELP_RETIRE_TURNS = 3;
-
-/**
- * True once the operator demonstrably knows voice control (N logged turns):
- * the hover tooltip then retires instead of covering the chat box forever.
- */
-export function isVoiceHelpRetired(log, threshold = VOICE_HELP_RETIRE_TURNS) {
-  try {
-    return (log?.list?.() || []).length >= threshold;
-  } catch {
-    return false;
-  }
-}
-
 /** Known speakers; anything else normalizes to 'you' (untrusted input). */
 const CONVERSATION_KNOWN_WHO = new Set(['you', 'gemini', 'app', 'zai', 'ollama']);
 
