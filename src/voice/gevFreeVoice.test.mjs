@@ -1062,3 +1062,406 @@ test('typed chat answers prose directly, falls back to parser offline', async ()
   assert.equal(fallback.ok, true);
   assert.deepEqual(second.ran, [['fly_to_location', { locationId: 'tokyo' }]]);
 });
+
+test('camera place queries enable CCTV and navigate to the location', () => {
+  const de1 = parseFreeVoiceCommand('zeig mir eine kamera in london');
+  assert.deepEqual(de1.calls, [
+    { name: 'set_layer_visibility', args: { layerId: 'cctv', enabled: true } },
+    { name: 'fly_to_location', args: { locationId: 'london' } },
+  ]);
+  assert.match(de1.speech, /Öffne Kameras in london/);
+
+  const de2 = parseFreeVoiceCommand('kamera in london');
+  assert.deepEqual(de2.calls, [
+    { name: 'set_layer_visibility', args: { layerId: 'cctv', enabled: true } },
+    { name: 'fly_to_location', args: { locationId: 'london' } },
+  ]);
+
+  const de3 = parseFreeVoiceCommand('kameras in berlin');
+  assert.deepEqual(de3.calls, [
+    { name: 'set_layer_visibility', args: { layerId: 'cctv', enabled: true } },
+    { name: 'fly_to_location', args: { query: 'berlin' } },
+  ]);
+
+  const en1 = parseFreeVoiceCommand('cameras in Tokyo');
+  assert.deepEqual(en1.calls, [
+    { name: 'set_layer_visibility', args: { layerId: 'cctv', enabled: true } },
+    { name: 'fly_to_location', args: { locationId: 'tokyo' } },
+  ]);
+  assert.match(en1.speech, /Opening cameras in tokyo/);
+
+  const en2 = parseFreeVoiceCommand('cctv in Paris');
+  assert.deepEqual(en2.calls, [
+    { name: 'set_layer_visibility', args: { layerId: 'cctv', enabled: true } },
+    { name: 'fly_to_location', args: { locationId: 'paris' } },
+  ]);
+
+  const en3 = parseFreeVoiceCommand('show me a camera in london');
+  assert.deepEqual(en3.calls, [
+    { name: 'set_layer_visibility', args: { layerId: 'cctv', enabled: true } },
+    { name: 'fly_to_location', args: { locationId: 'london' } },
+  ]);
+
+  const sel = parseFreeVoiceCommand('select camera entrance');
+  assert.deepEqual(sel.calls, [
+    { name: 'control_cctv', args: { action: 'select', cameraQuery: 'entrance' } },
+  ]);
+});
+
+test('user echo prevention: missing routed.say synthesizes confirmation and NEVER echoes user text', async () => {
+  const userPrompt = 'zeig mir den sputnik satellit';
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      // Model returned tool call without say field
+      answer: '{"name": "track_entity", "args": {"query": "Sputnik"}}',
+    }),
+  });
+
+  const { seen, ran, controller } = chatTestController(fetchImpl);
+  const result = await controller.handleChatText(userPrompt);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(ran, [['track_entity', { query: 'Sputnik' }]]);
+
+  // Verify the AI did NOT echo the user prompt "zeig mir den sputnik satellit"
+  const aiLog = seen.filter(([who]) => who === 'ollama' || who === 'zai');
+  assert.ok(aiLog.length > 0, 'AI response was logged');
+  for (const [, text] of aiLog) {
+    assert.notEqual(text, userPrompt, 'AI log must NOT echo user prompt');
+    assert.ok(text.includes('Sputnik'), 'AI log contains synthesized confirmation with query');
+  }
+
+  // Also check controller.handleText directly for deictic/routed calls without say
+  const seenFree = [];
+  const ranFree = [];
+  const freeController = createFreeVoiceController({
+    announce: false,
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        answer: '{"name": "fly_to_location", "args": {"query": "Little Saint James"}}',
+      }),
+    }),
+    runner: async (name, args) => {
+      ranFree.push([name, args]);
+      return { ok: true, action: name };
+    },
+    log: { push: (who, text) => seenFree.push([who, text]), list: () => [] },
+  });
+
+  const freeResult = await freeController.handleText('fliege dorthin');
+  assert.equal(freeResult.ok, true);
+  const freeAiLog = seenFree.filter(([who]) => who === 'ollama' || who === 'zai');
+  for (const [, text] of freeAiLog) {
+    assert.notEqual(text, 'fliege dorthin', 'Never echo user prompt');
+    assert.ok(text.includes('Little Saint James'));
+  }
+});
+
+test('typed chat with model refusal falls back to local parser instead of speaking apology', async () => {
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      answer: 'Es tut mir leid – leider kann ich hier keine CCTV‑Kamera in London anzeigen, da dafür keine passende Tool‑Funktion verfügbar ist.',
+      blocked: false,
+      error: null,
+    }),
+  });
+  const { seen, ran, controller } = chatTestController(fetchImpl);
+  const result = await controller.handleChatText('zeig mir eine cctv kamera in London');
+  assert.equal(result.ok, true);
+  // Fallback to local parser executed the map commands (cctv enabled + fly to london)
+  assert.ok(ran.some(([name]) => name === 'set_layer_visibility' || name === 'control_cctv'));
+  assert.ok(ran.some(([name, args]) => name === 'fly_to_location' && (args.locationId === 'london' || args.query === 'london')));
+  // Verify it did not speak or log the apology
+  for (const [, text] of seen) {
+    assert.ok(!text.includes('Es tut mir leid'), 'Must not log refusal/apology');
+  }
+});
+
+test('handleChatText executes tool calls with silent: true and does NOT call speak or Google TTS', async () => {
+  const { played, env } = fakeAudioEnv();
+  const ttsRequests = [];
+  const ran = [];
+  const detail = { textContent: '' };
+  const fetchImpl = async (url, init) => {
+    if (url === '/api/gemini/tts') {
+      ttsRequests.push(JSON.parse(init.body));
+      return { ok: true, status: 200, json: async () => ({ audio: 'AAD/fw==', mimeType: 'audio/L16;codec=pcm;rate=24000' }) };
+    }
+    if (url === '/api/ollama/chat' || url === '/api/zai/chat') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          answer: '{"name": "fly_to_location", "args": {"query": "Tokyo"}, "say": "Flying to Tokyo."}',
+          blocked: false,
+          error: null,
+        }),
+      };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+
+  const controller = createFreeVoiceController({
+    announce: true,
+    ui: { detail },
+    fetchImpl,
+    browserEnv: env,
+    runner: async (name, args) => {
+      if (name === 'get_current_view_state' || name === 'get_entity_context') return { ok: true };
+      ran.push([name, args]);
+      return { ok: true, action: name };
+    },
+    captureViewport: async () => 'data:image/jpeg;base64,AAA=',
+  });
+
+  // 1. Routed tool call via handleChatText
+  const result = await controller.handleChatText('take me to Tokyo');
+  assert.equal(result.ok, true);
+  assert.deepEqual(ran[0], ['fly_to_location', { query: 'Tokyo' }]);
+  assert.equal(result.speech, 'Flying to Tokyo.');
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(ttsRequests.length, 0, 'Google TTS must NOT be called for routed chat text');
+  assert.equal(played.length, 0, 'AudioContext playback must NOT start for routed chat text');
+  assert.ok(!detail.textContent.includes('GOOGLE VOICE'), 'Detail must not display GOOGLE VOICE');
+  assert.ok(!detail.textContent.includes('LOCAL VOICE'), 'Detail must not display LOCAL VOICE');
+
+  // 2. Local fallback tool call via handleChatText (offline brain)
+  const offlineFetch = async (url, init) => {
+    if (url === '/api/gemini/tts') {
+      ttsRequests.push(JSON.parse(init.body));
+      return { ok: true, status: 200, json: async () => ({ audio: 'AAD/fw==', mimeType: 'audio/L16;codec=pcm;rate=24000' }) };
+    }
+    return { ok: false, status: 503, json: async () => ({}) };
+  };
+  const localController = createFreeVoiceController({
+    announce: true,
+    ui: { detail },
+    fetchImpl: offlineFetch,
+    browserEnv: env,
+    runner: async (name, args) => {
+      if (name === 'get_current_view_state' || name === 'get_entity_context') return { ok: true };
+      ran.push([name, args]);
+      return { ok: true, action: name };
+    },
+  });
+
+  const localResult = await localController.handleChatText('Zoom in a bit');
+  assert.equal(localResult.ok, true);
+  assert.deepEqual(ran[1], ['adjust_camera_zoom', { direction: 'in', amount: 'little' }]);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(ttsRequests.length, 0, 'Google TTS must NOT be called for local fallback chat text');
+  assert.equal(played.length, 0, 'AudioContext playback must NOT start for local fallback chat text');
+  assert.ok(!detail.textContent.includes('GOOGLE VOICE'));
+  assert.ok(!detail.textContent.includes('LOCAL VOICE'));
+});
+
+test('handleChatText with direct answer does NOT call speak', async () => {
+  const { played, env } = fakeAudioEnv();
+  const ttsRequests = [];
+  const detail = { textContent: '' };
+  const directAnswer = 'Das Wasser ist türkis, weil es sich um seichte Sandbänke und Korallenriffe handelt.';
+  const fetchImpl = async (url, init) => {
+    if (url === '/api/gemini/tts') {
+      ttsRequests.push(JSON.parse(init.body));
+      return { ok: true, status: 200, json: async () => ({ audio: 'AAD/fw==', mimeType: 'audio/L16;codec=pcm;rate=24000' }) };
+    }
+    if (url === '/api/ollama/chat' || url === '/api/zai/chat') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          answer: directAnswer,
+          blocked: false,
+          error: null,
+        }),
+      };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+
+  const controller = createFreeVoiceController({
+    announce: true,
+    ui: { detail },
+    fetchImpl,
+    browserEnv: env,
+    runner: async (name) => ({ ok: true, action: name }),
+    captureViewport: async () => 'data:image/jpeg;base64,AAA=',
+  });
+
+  const result = await controller.handleChatText('warum ist das wasser türkis?');
+  assert.equal(result.ok, true);
+  assert.equal(result.answer, directAnswer);
+  assert.equal(result.speech, directAnswer);
+  assert.ok(detail.textContent.includes('DAS WASSER IST TÜRKIS'));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(ttsRequests.length, 0, 'Google TTS must NOT be called for direct answers in chat');
+  assert.equal(played.length, 0, 'AudioContext playback must NOT start for direct answers in chat');
+  assert.ok(!detail.textContent.includes('GOOGLE VOICE'), 'Detail must not display GOOGLE VOICE');
+  assert.ok(!detail.textContent.includes('LOCAL VOICE'), 'Detail must not display LOCAL VOICE');
+});
+
+test('handleText (voice command) DOES call speak', async () => {
+  const { played, env } = fakeAudioEnv();
+  const ttsRequests = [];
+  const detail = { textContent: '' };
+  const fetchImpl = async (url, init) => {
+    if (url === '/api/gemini/tts') {
+      ttsRequests.push(JSON.parse(init.body));
+      return { ok: true, status: 200, json: async () => ({ audio: 'AAD/fw==', mimeType: 'audio/L16;codec=pcm;rate=24000' }) };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+
+  const controller = createFreeVoiceController({
+    announce: true,
+    ui: { detail },
+    fetchImpl,
+    browserEnv: env,
+    runner: async (name, args) => ({ ok: true, action: name, args }),
+  });
+
+  const result = await controller.handleText('take me to Tokyo');
+  assert.equal(result.ok, true);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(ttsRequests.length, 1, 'Google TTS MUST be called for handleText (voice commands)');
+  assert.match(ttsRequests[0].text, /Tokyo/i);
+  assert.equal(played.length, 1, 'AudioContext playback MUST start for handleText (voice commands)');
+  assert.match(detail.textContent, /GOOGLE VOICE/);
+});
+
+test('full map control parity across handleChatText and handleText for all 22 tools', async () => {
+  const tools = [
+    { name: 'fly_to_location', args: { query: 'Munich' } },
+    { name: 'adjust_camera_zoom', args: { direction: 'in', amount: 'medium' } },
+    { name: 'zoom_to_globe', args: {} },
+    { name: 'move_camera', args: { motion: 'orbit', speed: 'slow' } },
+    { name: 'set_layer_visibility', args: { layerId: 'flights', enabled: true } },
+    { name: 'control_cctv', args: { action: 'enable' } },
+    { name: 'control_radio', args: { action: 'play' } },
+    { name: 'annotate_map', args: { annotations: [{ type: 'area', target: 'Berlin' }] } },
+    { name: 'clear_annotations', args: {} },
+    { name: 'control_cockpit', args: { action: 'enter' } },
+    { name: 'select_nearest_aircraft', args: { layerId: 'flights' } },
+    { name: 'track_entity', args: { query: 'SATGUS' } },
+    { name: 'stop_tracking', args: {} },
+    { name: 'set_visual_style', args: { style: 'thermal' } },
+    { name: 'set_map_stack', args: { stack: 'osm' } },
+    { name: 'set_hud', args: { visible: 'on' } },
+    { name: 'set_panel_open', args: { panelId: 'data-panel', open: true } },
+    { name: 'set_context_mode', args: { mode: 'space-missions' } },
+    { name: 'control_scene', args: { action: 'stop' } },
+    { name: 'fly_route', args: {} },
+    { name: 'next_iss_pass', args: {} },
+    { name: 'web_search', args: { query: 'Eiffel Tower height' } },
+  ];
+
+  for (const { name, args } of tools) {
+    let currentTool = { name, args };
+    const ranChat = [];
+    const ranVoice = [];
+    const ttsChat = [];
+    const ttsVoice = [];
+
+    const fetchChat = async (url, init) => {
+      if (url === '/api/gemini/tts') {
+        ttsChat.push(JSON.parse(init.body));
+        return { ok: true, status: 200, json: async () => ({ audio: 'AAD/fw==', mimeType: 'audio/L16;codec=pcm;rate=24000' }) };
+      }
+      if (url === '/api/ollama/chat' || url === '/api/zai/chat') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            answer: JSON.stringify({ name: currentTool.name, args: currentTool.args, say: `Executing ${currentTool.name}` }),
+            blocked: false,
+            error: null,
+          }),
+        };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    };
+
+    const fetchVoice = async (url, init) => {
+      if (url === '/api/gemini/tts') {
+        ttsVoice.push(JSON.parse(init.body));
+        return { ok: true, status: 200, json: async () => ({ audio: 'AAD/fw==', mimeType: 'audio/L16;codec=pcm;rate=24000' }) };
+      }
+      if (url === '/api/ollama/chat' || url === '/api/zai/chat') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            answer: JSON.stringify({ name: currentTool.name, args: currentTool.args, say: `Executing ${currentTool.name}` }),
+            blocked: false,
+            error: null,
+          }),
+        };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    };
+
+    const chatCtrl = createFreeVoiceController({
+      announce: true,
+      fetchImpl: fetchChat,
+      runner: async (callName, callArgs) => {
+        if (callName === 'get_current_view_state' || callName === 'get_entity_context') return { ok: true };
+        ranChat.push([callName, callArgs]);
+        return { ok: true, action: callName, args: callArgs };
+      },
+      captureViewport: async () => 'data:image/jpeg;base64,AAA=',
+    });
+
+    const voiceCtrl = createFreeVoiceController({
+      announce: true,
+      fetchImpl: fetchVoice,
+      runner: async (callName, callArgs) => {
+        if (callName === 'get_current_view_state' || callName === 'get_entity_context') return { ok: true };
+        ranVoice.push([callName, callArgs]);
+        return { ok: true, action: callName, args: callArgs };
+      },
+      captureViewport: async () => 'data:image/jpeg;base64,AAA=',
+    });
+
+    // Test handleChatText
+    const resChat = await chatCtrl.handleChatText(`trigger ${name}`);
+    assert.equal(resChat.ok, true, `handleChatText failed for tool ${name}`);
+    assert.equal(ranChat.length, 1, `Runner not called in handleChatText for ${name}`);
+    assert.equal(ranChat[0][0], name, `Wrong tool called in handleChatText for ${name}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(ttsChat.length, 0, `handleChatText must be silent for ${name}`);
+
+    // Test handleText (via brain route for free phrasing)
+    const resVoice = await voiceCtrl.handleText(`trigger ${name}`);
+    assert.equal(resVoice.ok, true, `handleText failed for tool ${name}`);
+    assert.equal(ranVoice.length, 1, `Runner not called in handleText for ${name}`);
+    assert.equal(ranVoice[0][0], name, `Wrong tool called in handleText for ${name}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(ttsVoice.length, 1, `handleText must speak for ${name}`);
+  }
+});
+
+test('set_panel_open command parsing and speech synthesis in free voice', () => {
+  const openData = parseFreeVoiceCommand('open data panel');
+  assert.equal(openData.calls[0].name, 'set_panel_open');
+  assert.deepEqual(openData.calls[0].args, { panelId: 'data-panel', open: true });
+  assert.match(openData.speech, /Opening data-panel/);
+
+  const closeControl = parseFreeVoiceCommand('schließe kontrollpanel');
+  assert.equal(closeControl.calls[0].name, 'set_panel_open');
+  assert.deepEqual(closeControl.calls[0].args, { panelId: 'control-panel', open: false });
+  assert.match(closeControl.speech, /Schließe control-panel/);
+  assert.equal(closeControl.lang, 'de');
+
+  const openCctv = parseFreeVoiceCommand('öffne kamera-panel');
+  assert.equal(openCctv.calls[0].name, 'set_panel_open');
+  assert.deepEqual(openCctv.calls[0].args, { panelId: 'cctv-panel', open: true });
+});
+
+
+

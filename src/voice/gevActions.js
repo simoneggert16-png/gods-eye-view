@@ -243,13 +243,51 @@ const TRACKABLE_ALIASES = [
 ];
 
 /**
+ * Historic / decayed spacecraft knowledge base.
+ * Sputnik 1 deorbited on January 4, 1958; Mir on March 23, 2001; Apollo & Challenger
+ * are historic missions. None are active in orbit today.
+ */
+export const HISTORIC_SPACECRAFT = Object.freeze([
+  {
+    name: 'Sputnik 1',
+    match: /\bsputnik(\s*1)?\b/i,
+    deorbited: 'January 4, 1958',
+    message: 'Sputnik 1 deorbited on January 4, 1958 and is no longer in orbit. You can track active spacecraft like the ISS, Hubble (HST), or Starlink, or show the current satellite layer to view active objects.',
+  },
+  {
+    name: 'Mir',
+    match: /^(?:die\s+|the\s+)?mir$|\b(?:(?:space\s+)?station\s+mir|raumstation\s+mir|mir\s+(?:space\s+)?station|mir\s+raumstation)\b/i,
+    deorbited: 'March 23, 2001',
+    message: 'The Mir space station deorbited on March 23, 2001 and is no longer in orbit. You can track active spacecraft like the ISS, Hubble (HST), or Starlink, or show the current satellite layer to view active objects.',
+  },
+  {
+    name: 'Apollo',
+    match: /\bapollo(\s*\d+)?\b/i,
+    deorbited: 'historic missions',
+    message: 'The Apollo missions are historic spacecraft and no longer in Earth orbit. You can track active spacecraft like the ISS, Hubble (HST), or Starlink, or show the current satellite layer to view active objects.',
+  },
+  {
+    name: 'Challenger',
+    match: /\bchallenger\b/i,
+    deorbited: 'January 28, 1986',
+    message: 'Space Shuttle Challenger is a historic mission and is not in orbit. You can track active spacecraft like the ISS, Hubble (HST), or Starlink, or show the current satellite layer to view active objects.',
+  },
+]);
+
+export function findHistoricSpacecraft(query) {
+  const q = String(query || '').trim();
+  if (!q) return null;
+  return HISTORIC_SPACECRAFT.find((item) => item.match.test(q)) || null;
+}
+
+/**
  * Family hint words: which layer a description points at ("Satellit" →
  * satellites, "Schiff" → vessels, "Flugzeug" → flights). Used to auto-enable
  * exactly that layer before searching — voice must never answer "turn it on
  * yourself" for something it can enable in the same breath.
  */
 const TRACK_FAMILY_WORDS = [
-  { layerId: 'satellites', re: /\b(satellit(en|es)?|satelit(en|es)?|satellite(s)?|satgus|norad|tle|orbit|orbits|raumstation|space station|iss|hst|jwst|tiangong|hubble|webb)\b/i },
+  { layerId: 'satellites', re: /\b(satellit(en|es)?|satelit(en|es)?|satellite(s)?|satgus|norad|tle|orbit|orbits|raumstation|space station|iss|hst|jwst|tiangong|hubble|webb|sputnik|apollo|challenger)\b/i },
   { layerId: 'ais-live-vessels', re: /\b(schiff(e|es|en)?|ship(s)?|vessel(s)?|boot(e|es|en)?|boat(s)?|tanker|frachter|container|fähre|faehre|ferry|kreuzfahrt|yacht|segel|mmsi)\b/i },
   { layerId: 'military', re: /\b(militär|militaer|military|kampfjet(s)?|fighter(s)?|bomber|abfangjäger|tarnkappen)\b/i },
   { layerId: 'flights', re: /\b(flugzeug(e|es|en)?|aircraft|plane(s)?|flieger|jet(s)?|hubschrauber|helicopter|heli|flug\b|flight(s)?|callsign|icao|airline|passagier)\b/i },
@@ -960,8 +998,31 @@ export function createGevActionRunner({ viewer, styleManager, dataManager, scene
       return controlScene(sceneDirector, args);
     }
 
-    if (name === 'control_cctv') {
-      return controlCctv(dataManager, args, styleManager);
+    if (name === 'control_cctv' || name === 'cam' || name === 'camera' || name === 'cameras' || name === 'cctv' || name === 'track_named_cameras' || name === 'track_camera' || name === 'track_cameras' || name === 'show_camera' || name === 'cctv_camera') {
+      const cctvArgs = { ...args };
+      if (!cctvArgs.action) {
+        cctvArgs.action = (cctvArgs.cameraQuery || cctvArgs.locationQuery || cctvArgs.query || cctvArgs.location) ? 'select' : 'enable';
+      }
+      if (!cctvArgs.cameraQuery && (cctvArgs.locationQuery || cctvArgs.query || cctvArgs.location || cctvArgs.target || cctvArgs.name)) {
+        cctvArgs.cameraQuery = cctvArgs.locationQuery || cctvArgs.query || cctvArgs.location || cctvArgs.target || cctvArgs.name;
+      }
+      return controlCctv(dataManager, cctvArgs, styleManager, viewer);
+    }
+
+    if (name === 'fly_to' || name === 'fly' || name === 'navigate' || name === 'goto') {
+      return flyToLocation(viewer, args);
+    }
+
+    if (name === 'track') {
+      return trackEntity(viewer, dataManager, styleManager, args);
+    }
+
+    if (name === 'annotate') {
+      return annotateMap(annotations, args);
+    }
+
+    if (name === 'zoom') {
+      return adjustCameraZoom(viewer, args);
     }
 
     if (name === 'control_radio') {
@@ -1162,8 +1223,67 @@ function controlScene(sceneDirector, args = {}) {
   throw new Error(`Unknown scene action: ${args.action || 'missing'}`);
 }
 
+/**
+ * Resolves a camera query against the CCTV catalog using exact, substring,
+ * city, and multi-token matching.
+ *
+ * @param {Array<object>} cams - Registered cameras from getUIState().
+ * @param {string} rawQuery - Place, landmark, city, or camera name query.
+ * @returns {object|null} Matching camera or null.
+ */
+export function findCctvCameraMatch(cams, rawQuery) {
+  if (!Array.isArray(cams) || !cams.length) return null;
+  const q = String(rawQuery || '').trim().toLowerCase();
+  if (!q) return null;
+
+  // 1. Exact ID or Name
+  let m = cams.find((c) => String(c.id || '').toLowerCase() === q || String(c.name || '').toLowerCase() === q);
+  if (m) return m;
+
+  // 2. Name contains query
+  m = cams.find((c) => String(c.name || '').toLowerCase().includes(q));
+  if (m) return m;
+
+  // 3. Exact city or cityId
+  m = cams.find((c) => String(c.city || '').toLowerCase() === q || String(c.cityId || '').toLowerCase() === q);
+  if (m) return m;
+
+  // 4. Cleaned query without stop words / noise words
+  const clean = q.replace(/\b(?:der|die|das|den|dem|des|ein|eine|einen|einer|in|bei|an|am|auf|im|near|at|the|a|an|cctv|kamera|camera|webcam|livecam)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+  if (clean && clean !== q) {
+    m = cams.find((c) => String(c.name || '').toLowerCase().includes(clean));
+    if (m) return m;
+
+    m = cams.find((c) => String(c.city || '').toLowerCase() === clean || String(c.cityId || '').toLowerCase() === clean);
+    if (m) return m;
+  }
+
+  // 5. Multi-token match: all substantive words in query match cam.name
+  const words = (clean || q).split(/\s+/).filter((w) => w.length > 2);
+  if (words.length > 1) {
+    const cityMatch = cams.find((c) => words.some((w) => String(c.city || '').toLowerCase().includes(w)));
+    const cityName = cityMatch ? String(cityMatch.city).toLowerCase() : '';
+    const nonCityWords = words.filter((w) => !cityName || !cityName.includes(w));
+
+    if (nonCityWords.length > 0) {
+      m = cams.find((c) => {
+        const name = String(c.name || '').toLowerCase();
+        const matchesCity = !cityName || String(c.city || '').toLowerCase().includes(cityName);
+        return matchesCity && nonCityWords.every((w) => name.includes(w));
+      });
+      if (m) return m;
+    }
+  }
+
+  // 6. Query contains camera city
+  m = cams.find((c) => c.city && q.includes(String(c.city).toLowerCase()));
+  if (m) return m;
+
+  return null;
+}
+
 /** Voice CCTV control over the cctv layer module's public surface. */
-export async function controlCctv(dataManager, args = {}, styleManager = null) {
+export async function controlCctv(dataManager, args = {}, styleManager = null, viewer = null) {
   const action = String(args.action || '').toLowerCase();
   const cctv = dataManager.layers.get('cctv')?.module;
   if (!cctv) {
@@ -1171,11 +1291,15 @@ export async function controlCctv(dataManager, args = {}, styleManager = null) {
   }
 
   if (action === 'enable' || action === 'disable') {
-    await dataManager.setEnabled('cctv', action === 'enable', { origin: 'voice' });
+    if (typeof dataManager.setEnabled === 'function') {
+      await dataManager.setEnabled('cctv', action === 'enable', { origin: 'voice' });
+    }
     return { ok: true, action: 'control_cctv', enabled: dataManager.isEnabled('cctv') };
   }
   if (!dataManager.isEnabled('cctv')) {
-    return { ok: false, action: 'control_cctv', error: 'CCTV layer is off — enable it first' };
+    if (typeof dataManager.setEnabled === 'function') {
+      await dataManager.setEnabled('cctv', true, { origin: 'voice' });
+    }
   }
 
   const summarize = () => {
@@ -1195,10 +1319,23 @@ export async function controlCctv(dataManager, args = {}, styleManager = null) {
   if (action === 'select') {
     const query = String(args.cameraQuery || '').trim().toLowerCase();
     if (!query) throw new Error('control_cctv select needs cameraQuery');
-    const cams = cctv.getUIState?.()?.cameras || [];
-    const match = cams.find((cam) => String(cam.id || '').toLowerCase() === query)
-      || cams.find((cam) => String(cam.name || '').toLowerCase() === query)
-      || cams.find((cam) => String(cam.name || '').toLowerCase().includes(query));
+    let cams = cctv.getUIState?.()?.cameras || [];
+    let match = findCctvCameraMatch(cams, query);
+    if (!match && viewer) {
+      try {
+        await flyToLocation(viewer, { query: args.cameraQuery, viewMode: 'close' });
+        cams = cctv.getUIState?.()?.cameras || [];
+        match = findCctvCameraMatch(cams, query);
+        if (!match && typeof cctv.focusNearest === 'function') {
+          const nearestId = cctv.focusNearest({ focus: false });
+          if (nearestId) {
+            match = cams.find((c) => c.id === nearestId) || { id: nearestId, name: nearestId };
+          }
+        }
+      } catch {
+        /* best effort */
+      }
+    }
     if (!match) {
       return { ok: false, action: 'control_cctv', error: `No camera matched "${args.cameraQuery}"`, ...summarize() };
     }
@@ -1774,6 +1911,30 @@ async function trackEntity(viewer, dataManager, styleManager, args = {}) {
   }
 
   const requested = args.layerId ? normalizeLayerId(args.layerId) : null;
+
+  // Camera query mistakenly routed to track_entity ("London CCTV", "camera at tower bridge")
+  if (/\b(?:cctv|camera|kamera|webcam|livecam)\b/i.test(query)) {
+    const cleanQuery = query.replace(/\b(?:cctv|camera|kamera|webcam|livecam)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+    return controlCctv(dataManager, { action: 'select', cameraQuery: cleanQuery || query }, styleManager, viewer);
+  }
+
+  // Historic / decayed spacecraft (Sputnik 1, Mir, Apollo, Challenger)
+  const historic = findHistoricSpacecraft(query);
+  if (historic && (!requested || requested === 'satellites')) {
+    await ensureTrackLayer(dataManager, 'satellites');
+    return {
+      ok: false,
+      action: 'track_entity',
+      query,
+      layerId: 'satellites',
+      kind: 'satellite',
+      historic: true,
+      error: historic.message,
+      message: historic.message,
+      suggestions: ['ISS', 'Hubble (HST)', 'Starlink'],
+    };
+  }
+
   // Description search: famous-entity aliases map colloquial descriptions
   // onto the catalog query first ("Mark Rober satellite" → SATGUS).
   let effectQuery = query;
@@ -1839,6 +2000,21 @@ async function trackEntity(viewer, dataManager, styleManager, args = {}) {
         error: trackedOk ? null : 'Match found but tracking failed',
       };
     });
+  }
+
+  if (historic) {
+    await ensureTrackLayer(dataManager, 'satellites');
+    return {
+      ok: false,
+      action: 'track_entity',
+      query,
+      layerId: 'satellites',
+      kind: 'satellite',
+      historic: true,
+      error: historic.message,
+      message: historic.message,
+      suggestions: ['ISS', 'Hubble (HST)', 'Starlink'],
+    };
   }
 
   const disabledNote = skippedDisabled.length ? ` (disabled layers skipped: ${skippedDisabled.join(', ')})` : '';
@@ -2999,7 +3175,7 @@ function coarseBasemapPlace(viewScale, latitude, longitude, inferredCountry = nu
 function getViewTargetCartographic(viewer) {
   const signature = cameraViewSignature(viewer);
   const cached = viewTargetCache.get(viewer);
-  if (cached?.signature === signature && performance.now() - cached.cachedAt < 2500) {
+  if (cached?.signature === signature && performance.now() - cached.cachedAt < 60000) {
     return cached.target;
   }
   const position = getViewTargetCartesian(viewer);

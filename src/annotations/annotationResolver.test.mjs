@@ -256,10 +256,10 @@ test('ask-side admin bypass: explicit "state of Texas" skips recovery and proxim
 
 for (const fixture of [
   {
-    target: 'Empire State',
-    lat: 40.7484,
-    lon: -73.9857,
-    types: ['premise', 'tourist_attraction'],
+    target: 'Bay State',
+    lat: 42.3601,
+    lon: -71.0589,
+    types: ['premise', 'point_of_interest'],
   },
   {
     target: 'Ohio State',
@@ -450,3 +450,46 @@ test('ask-side bypass: island ask and flyTo both bypass near-view proximity gate
   assert.ok(resolvedFlyTo, 'flyTo: true allows navigating to distant locations');
   assert.equal(resolvedFlyTo.source, 'geocode');
 });
+
+test('curated landmarks bypass near-view proximity gate even when camera is far', async (t) => {
+  const calls = [];
+  installGoogleMocks(t, async (url) => {
+    calls.push(String(url));
+    if (String(url).startsWith('https://maps.googleapis.com/')) {
+      const q = new URL(String(url)).searchParams.get('address');
+      if (q.includes('helikopter') || q.includes('Landeplatz')) {
+        return { json: async () => geocodePayload({
+          lat: 38.8967,
+          lon: -77.0365,
+          types: ['premise'],
+          label: 'White House Helipad, Washington DC',
+        }) };
+      }
+      return { json: async () => geocodePayload({
+        lat: 38.8977,
+        lon: -77.0365,
+        types: ['premise'],
+        label: 'White House, Washington DC',
+      }) };
+    }
+    return { ok: true, json: async () => ({ places: [] }) };
+  });
+
+  // Viewer is in Austin, Texas (~2100 km away from Washington DC):
+  const resolved = await resolveAnnotationTarget({
+    viewer: closeViewportViewer(),
+    target: 'das weiße Haus',
+  });
+  assert.ok(resolved, 'curated landmark White House bypasses near-view proximity gate');
+  assert.equal(resolved.source, 'geocode');
+  assert.deepEqual([resolved.lat, resolved.lon], [38.8977, -77.0365]);
+
+  const resolvedHelipad = await resolveAnnotationTarget({
+    viewer: closeViewportViewer(),
+    target: 'helikopter landeplatz beim weissen haus',
+  });
+  assert.ok(resolvedHelipad, 'White House Helipad landmark bypasses near-view proximity gate');
+  assert.equal(resolvedHelipad.source, 'geocode');
+  assert.deepEqual([resolvedHelipad.lat, resolvedHelipad.lon], [38.8967, -77.0365]);
+});
+

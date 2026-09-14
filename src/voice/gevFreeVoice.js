@@ -65,6 +65,18 @@ const FREE_VOICE_STACKS = Object.freeze([
   ['osm', /\b(osm|openstreetmap|karte|mapnik)\b/],
 ]);
 
+/** Panel aliases → set_panel_open enum. */
+const FREE_VOICE_PANELS = Object.freeze([
+  ['data-panel', /\b(data[- ]?panel|daten[- ]?panel|layers?[- ]?panel|ebenen[- ]?panel)\b/],
+  ['control-panel', /\b(control[- ]?panel|kontroll[- ]?panel|steuerungs[- ]?panel)\b/],
+  ['cctv-panel', /\b(cctv[- ]?panel|kamera[- ]?panel|camera[- ]?panel)\b/],
+  ['radio-panel', /\b(radio[- ]?panel)\b/],
+  ['scene-panel', /\b(scene[- ]?panel|szenen[- ]?panel)\b/],
+  ['location-bar', /\b(location[- ]?bar|standort[- ]?leiste|ortsleiste)\b/],
+  ['global-context-panel', /\b(context[- ]?panel|kontext[- ]?panel)\b/],
+  ['pp-toggles', /\b(pp[- ]?toggles|post[- ]?processing[- ]?panel)\b/],
+]);
+
 /** Known city preset ids for fly_to_location. */
 const FREE_VOICE_PRESETS = Object.freeze({
   austin: 'austin',
@@ -78,7 +90,7 @@ const FREE_VOICE_PRESETS = Object.freeze({
 });
 
 /** German-only trigger marker: any of these matched → confirm in German. */
-const GERMAN_MARKER = /flieg|bring|mich|nach|zeige|mir|schalte|ein|aus|ansicht|über|nächste|stopp|allein|weg|hin|weltkugel|erdbeben|wärmebild|nachtsicht|kamera|flugzeug|schiff|feuer|verkehr|satellit|globus/i;
+const GERMAN_MARKER = /flieg|bring|mich|nach|zeige|mir|schalte|ein|aus|ansicht|über|nächste|stopp|allein|weg|hin|weltkugel|erdbeben|wärmebild|nachtsicht|kamera|flugzeug|schiff|feuer|verkehr|satellit|globus|öffne|schließe|schliess|kontroll/i;
 
 /**
  * Entity-family words: a search verb ("suche", "finde", "find") plus one of
@@ -337,6 +349,33 @@ export function parseFreeVoiceCommand(input) {
     }
   }
 
+  // --- Camera / CCTV place query -------------------------------------------
+  // "zeig mir eine kamera in london", "kamera in X", "cameras in X", "cctv in X"
+  // enables CCTV and flies to the location so cameras in that area display.
+  {
+    const camPlaceMatch = text.match(
+      /(?:(?:zeig|zeige)\s+mir\s+(?:mal\s+)?(?:eine?n?|irgendeine?n?)?\s*|(?:show|give)\s+me\s+(?:a|an|any|some)?\s*|(?:suche|finde|find)\s+(?:eine?n?\s*)?)?(?:kameras?|cameras?|cctv)\s+(?:in|near|bei|in der nähe von|at|von)\s+(.{2,100})/
+    ) || text.match(
+      /(?:(?:zeig|zeige)\s+mir\s+(?:mal\s+)?|(?:show|give)\s+me\s+)(?:eine?n?\s+)?(?:kameras?|cameras?|cctv)\s+(.{2,100})/
+    );
+    if (camPlaceMatch) {
+      const rawTarget = cleanPlace(camPlaceMatch[1]);
+      if (rawTarget && !/^(viewsheds?|nearest|next|prev|previous|abdeckung|coverage|on|off|an|aus|ein)$/i.test(rawTarget)) {
+        const place = rawTarget;
+        const preset = resolvePreset(` ${place.toLowerCase()} `);
+        const calls = [
+          { name: 'set_layer_visibility', args: { layerId: 'cctv', enabled: true } },
+          { name: 'fly_to_location', args: preset ? { locationId: preset } : { query: place } },
+        ];
+        const speech = say(`Opening cameras in ${place}.`, `Öffne Kameras in ${place}.`);
+        if (hasReferenceWords(place)) {
+          return toBrain(calls, speech);
+        }
+        return { calls, speech, lang };
+      }
+    }
+  }
+
   // --- Indefinite show intent: "show me ANY X" is not a place ---------------
   // "Zeige mir irgendein Militärflugzeug" must enable + stage that layer,
   // never geocode the sentence. Runs before fly_to_location.
@@ -518,6 +557,28 @@ export function parseFreeVoiceCommand(input) {
     }
   }
 
+  // --- Panels (set_panel_open) ---------------------------------------------
+  {
+    const hasVerb = /(?:^|\s)(open|show|öffn\w*|oeffn\w*|zeig\w*|close|hide|schlie[ßs]\w*|versteck\w*|ausblenden|einblenden)\s/i.test(text);
+    if (hasVerb) {
+      let panelId = null;
+      for (const [id, re] of FREE_VOICE_PANELS) {
+        if (re.test(text)) { panelId = id; break; }
+      }
+      if (panelId) {
+        const open = !/(?:^|\s)(close|hide|schlie[ßs]\w*|versteck\w*|ausblenden|aus|zu)\s/i.test(text);
+        return {
+          calls: [{ name: 'set_panel_open', args: { panelId, open } }],
+          speech: say(
+            open ? `Opening ${panelId}.` : `Closing ${panelId}.`,
+            open ? `Öffne ${panelId}.` : `Schließe ${panelId}.`,
+          ),
+          lang,
+        };
+      }
+    }
+  }
+
   // --- Context missions ------------------------------------------------------
   if (/\bspace missions?\b|weltraummission/.test(text)) {
     return { calls: [{ name: 'set_context_mode', args: { mode: 'space-missions' } }], speech: say('Showing space missions.', 'Zeige Weltraummissionen.'), lang };
@@ -597,6 +658,22 @@ export function parseFreeVoiceCommand(input) {
     }
     if (/\bnext\b|nächste/.test(text)) {
       return { calls: [{ name: 'control_cctv', args: { action: 'next' } }], speech: say('Next camera.', 'Nächste Kamera.'), lang };
+    }
+    if (/\bprevious\b|\bprev\b|vorherige/.test(text)) {
+      return { calls: [{ name: 'control_cctv', args: { action: 'prev' } }], speech: say('Previous camera.', 'Vorherige Kamera.'), lang };
+    }
+    const sel = text.match(/(?:select|choose|wähle|aktiviere)\s+(?:camera|kamera|cctv)\s+(.+)/i)
+      || text.match(/(?:zeig(?:e)?\s+mir|show\s+me|find(?:e)?|öffne|open)\s+(?:eine\s+|a\s+)?(?:camera|kamera|cctv)\s+(?:bei|in|at|near|around|von)\s+(.+)/i)
+      || text.match(/(?:camera|kamera|cctv)\s+(?:bei|in|at|near|around|von)\s+(.+)/i);
+    if (sel) {
+      const cam = cleanPlace(sel[1]);
+      if (cam) {
+        return {
+          calls: [{ name: 'control_cctv', args: { action: 'select', cameraQuery: cam } }],
+          speech: say(`Opening cameras in ${cam}.`, `Öffne Kameras in ${cam}.`),
+          lang,
+        };
+      }
     }
     const layerOn = /\b(turn on|enable|show|einschalten|einblenden)\b/.test(text);
     const layerOff = /\b(turn off|disable|hide|ausschalten|ausblenden)\b/.test(text);
@@ -811,8 +888,14 @@ export function speakFreeVoiceConfirmation(text, browserEnv, lang = 'en') {
       const german = lang === 'de';
       utter.lang = german ? 'de-DE' : 'en-US';
       const pick = voices.find((v) => german
-        ? /google.*deutsch/i.test(v?.name || '')
-        : /google.*us.*english/i.test(v?.name || ''))
+        ? /(?:natural.*german|online.*german|google.*deutsch|german.*natural)/i.test(v?.name || '')
+        : /(?:natural.*english|online.*english|google.*us.*english|english.*natural)/i.test(v?.name || ''))
+        || voices.find((v) => german
+          ? /google.*deutsch/i.test(v?.name || '')
+          : /google.*us.*english/i.test(v?.name || ''))
+        || voices.find((v) => german
+          ? /^de([-_]|$)/i.test(v?.lang || '') && !/desktop/i.test(v?.name || '')
+          : /^en([-_]us|$)/i.test(v?.lang || '') && !/desktop/i.test(v?.name || ''))
         || voices.find((v) => german
           ? /^de([-_]|$)/i.test(v?.lang || '')
           : /^en([-_]us|$)/i.test(v?.lang || ''));
@@ -823,6 +906,23 @@ export function speakFreeVoiceConfirmation(text, browserEnv, lang = 'en') {
   } catch {
     return false;
   }
+}
+
+/**
+ * Unlock and resume the WebAudio context during user gestures (click, submit, keydown).
+ * Ensures Google TTS PCM audio playback never falls back to the local voice due to suspended AudioContext.
+ */
+export function resumeGoogleTTSAudio(browserEnv) {
+  try {
+    const env = browserEnv || (typeof window !== 'undefined' ? window : null);
+    const Ctor = env?.AudioContext || env?.webkitAudioContext;
+    if (!Ctor) return;
+    if (!_googleTtsAudioContext || _googleTtsAudioContextCtor !== Ctor) {
+      _googleTtsAudioContext = new Ctor({ sampleRate: GOOGLE_TTS_SAMPLE_RATE });
+      _googleTtsAudioContextCtor = Ctor;
+    }
+    void _googleTtsAudioContext.resume?.().catch(() => {});
+  } catch { /* best effort */ }
 }
 
 /** Sample rate of Gemini TTS PCM output (matches the upstream mime type). */
@@ -1042,7 +1142,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
    * best-effort through the same action runner so the answer is grounded in
    * what the user is actually looking at.
    */
-  async function askGemini(question, lang = 'en') {
+  async function askGemini(question, lang = 'en', opts = {}) {
     const de = lang === 'de';
     const say = (en, german) => (de ? german : en);
     if (!doFetch) {
@@ -1074,7 +1174,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       );
       state.lastResult = { ok: false, speech, needsKey: true };
       setDetail(speech);
-      speak(speech, lang);
+      if (!opts?.silent) speak(speech, lang);
       logTurn('app', speech);
       return state.lastResult;
     }
@@ -1085,7 +1185,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       );
       state.lastResult = { ok: false, speech, retryable: true };
       setDetail(speech);
-      speak(speech, lang);
+      if (!opts?.silent) speak(speech, lang);
       logTurn('app', speech);
       return state.lastResult;
     }
@@ -1093,7 +1193,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     if (response?.ok && answer) {
       state.lastResult = { ok: true, speech: answer, answer };
       setDetail(answer);
-      speak(answer, lang);
+      if (!opts?.silent) speak(answer, lang);
       logTurn('gemini', answer);
       return state.lastResult;
     }
@@ -1102,7 +1202,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       : say('Free answers are unavailable right now.', 'Freie Antworten sind gerade nicht verfügbar.');
     state.lastResult = { ok: false, speech };
     setDetail(speech);
-    speak(speech, lang);
+    if (!opts?.silent) speak(speech, lang);
     logTurn('app', speech);
     return state.lastResult;
   }
@@ -1112,7 +1212,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
    * Returns { handled } — a 503 (key missing) or dead network means "next
    * brain in the chain", everything else is handled here, honestly.
    */
-  async function askChatBrain({ endpoint, who, lang = 'en', message, context, image = null }) {
+  async function askChatBrain({ endpoint, who, lang = 'en', message, context, image = null, opts = {} }) {
     const de = lang === 'de';
     const say = (en, german) => (de ? german : en);
     if (!doFetch) return { handled: false };
@@ -1135,7 +1235,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       const speech = say(en, german);
       state.lastResult = { ok: false, speech, ...extra };
       setDetail(speech);
-      speak(speech, lang);
+      if (!opts?.silent) speak(speech, lang);
       logTurn('app', speech);
       return { handled: true, result: state.lastResult };
     };
@@ -1150,7 +1250,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     if (response.ok && answer) {
       state.lastResult = { ok: true, speech: answer, answer };
       setDetail(answer);
-      speak(answer, lang);
+      if (!opts?.silent) speak(answer, lang);
       logTurn(who, answer);
       return { handled: true, result: state.lastResult };
     }
@@ -1167,7 +1267,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
    * executes directly, never chains again), so this always terminates.
    * Falls back to speaking the top hit when the brain yields no second call.
    */
-  async function chainWebSearchFollowUp(endpoint, brainWho, originalText, searchResult, lang = 'en') {
+  async function chainWebSearchFollowUp(endpoint, brainWho, originalText, searchResult, lang = 'en', opts = {}) {
     const de = lang === 'de';
     const results = Array.isArray(searchResult?.results) ? searchResult.results.slice(0, 3) : [];
     if (!results.length) return null;
@@ -1188,7 +1288,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     }
     const follow = (name, args, say) => {
       logTurn(brainWho, say);
-      return executeCalls([{ name, args }], say, lang, { routed: true });
+      return executeCalls([{ name, args }], say, lang, { routed: true, silent: opts?.silent });
     };
     const routed = extractRouterCall(data?.answer);
     if (routed && routed.name && routed.name !== 'web_search' && isCompleteRouterCall(routed.name, routed.args)) {
@@ -1204,7 +1304,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       : (de ? 'Die Suche brachte keine verwertbaren Fakten.' : 'The search brought no usable facts.');
     state.lastResult = { ok: true, speech, answer: speech };
     setDetail(speech);
-    speak(speech, lang);
+    if (!opts?.silent) speak(speech, lang);
     logTurn(brainWho, speech);
     return state.lastResult;
   }
@@ -1214,18 +1314,18 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
    * brain its one follow-up hop. Returns the chained result, or null when
    * no chaining applies (caller returns the first result as-is).
    */
-  async function maybeChainWebSearch(endpoint, brainWho, originalText, routedName, firstResult, lang = 'en') {
+  async function maybeChainWebSearch(endpoint, brainWho, originalText, routedName, firstResult, lang = 'en', opts = {}) {
     if (routedName !== 'web_search' || !doFetch) return null;
     const wsOutcome = firstResult?.outcomes?.[0];
     if (!wsOutcome?.ok || !Array.isArray(wsOutcome.result?.results) || !wsOutcome.result.results.length) return null;
-    return chainWebSearchFollowUp(endpoint, brainWho, originalText, wsOutcome.result, lang);
+    return chainWebSearchFollowUp(endpoint, brainWho, originalText, wsOutcome.result, lang, opts);
   }
 
   /**
    * Open typed questions walk the brain chain: Z.AI GLM first (new + cheap),
    * then Ollama Cloud, then Gemini. The first configured brain answers.
    */
-  async function chatWithBrain(question, lang = 'en') {
+  async function chatWithBrain(question, lang = 'en', opts = {}) {
     const context = await readContextText();
     let image = null;
     try {
@@ -1237,10 +1337,10 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       { endpoint: '/api/zai/chat', who: 'zai' },
       { endpoint: '/api/ollama/chat', who: 'ollama' },
     ]) {
-      const attempt = await askChatBrain({ ...brain, lang, message: question, context, image });
+      const attempt = await askChatBrain({ ...brain, lang, message: question, context, image, opts });
       if (attempt.handled) return attempt.result;
     }
-    return askGemini(question, lang);
+    return askGemini(question, lang, opts);
   }
 
   /**
@@ -1291,14 +1391,15 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
           const data = await response?.json?.().catch(() => null);
           const routed = extractRouterCall(data?.answer);
           if (routed && routed.name && isCompleteRouterCall(routed.name, routed.args)) {
-            logTurn(brain.who, routed.say || text);
+            const say = routed.say || synthRouterSay(routed.name, routed.args, lang);
+            logTurn(brain.who, say);
             const first = await executeCalls(
               [{ name: routed.name, args: routed.args }],
-              routed.say || text,
+              say,
               lang,
-              { routed: true },
+              { routed: true, silent: true },
             );
-            return (await maybeChainWebSearch(brain.endpoint, brain.who, text, routed.name, first, lang)) || first;
+            return (await maybeChainWebSearch(brain.endpoint, brain.who, text, routed.name, first, lang, { silent: true })) || first;
           }
           // Degenerate pseudo-format ("fly_to_location {...}", bare tool +
           // JSON): synthesize the call with a clean confirmation instead of
@@ -1311,16 +1412,16 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
               [{ name: degenerate.name, args: degenerate.args }],
               say,
               lang,
-              { routed: true },
+              { routed: true, silent: true },
             );
-            return (await maybeChainWebSearch(brain.endpoint, brain.who, text, degenerate.name, first, lang)) || first;
+            return (await maybeChainWebSearch(brain.endpoint, brain.who, text, degenerate.name, first, lang, { silent: true })) || first;
           }
           // Direct answers to questions (visual phenomena, geography, colors, etc.) from the model.
           const direct = extractDirectAnswer(data?.answer);
-          if (response.ok && direct) {
+          const isRefusal = /(?:tut mir leid|kann leider|konnte keine|nicht finden|keine cctv|nicht möglich|sorry|cannot find|could not find|unable to find|no suitable tool|keine passende tool)/i.test(direct || '');
+          if (response.ok && direct && !isRefusal) {
             state.lastResult = { ok: true, speech: direct, answer: direct };
             setDetail(direct);
-            speak(direct, lang);
             logTurn(brain.who, direct);
             return state.lastResult;
           }
@@ -1332,22 +1433,22 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     if (parsed.see) {
       // Typed see without a brain vision answer above: still describe via
       // the classic path (currently Gemini-backed) as last resort.
-      return describeView(parsed.see, parsed.lang);
+      return describeView(parsed.see, parsed.lang, { silent: true });
     }
     if (parsed.geminiQuestion) {
-      return chatWithBrain(parsed.geminiQuestion, parsed.lang);
+      return chatWithBrain(parsed.geminiQuestion, parsed.lang, { silent: true });
     }
     if (!parsed.calls.length) {
-      return routeUnknown(text, parsed);
+      return routeUnknown(text, parsed, { silent: true });
     }
-    return executeCalls(parsed.calls, parsed.speech, parsed.lang, { rawText: text });
+    return executeCalls(parsed.calls, parsed.speech, parsed.lang, { rawText: text, silent: true });
   }
 
   /**
    * Look at the screen: capture the viewport, describe it with the vision
    * model, speak the facts. Honest when capture is impossible or unconfigured.
    */
-  async function describeView(question, lang = 'en') {
+  async function describeView(question, lang = 'en', opts = {}) {
     const de = lang === 'de';
     const say = (en, german) => (de ? german : en);
     if (!doFetch) {
@@ -1373,7 +1474,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       );
       state.lastResult = { ok: false, speech };
       setDetail(speech);
-      speak(speech, lang);
+      if (!opts?.silent) speak(speech, lang);
       logTurn('app', speech);
       return state.lastResult;
     }
@@ -1396,7 +1497,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       );
       state.lastResult = { ok: false, speech, needsKey: true };
       setDetail(speech);
-      speak(speech, lang);
+      if (!opts?.silent) speak(speech, lang);
       logTurn('app', speech);
       return state.lastResult;
     }
@@ -1407,7 +1508,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       );
       state.lastResult = { ok: false, speech, retryable: true };
       setDetail(speech);
-      speak(speech, lang);
+      if (!opts?.silent) speak(speech, lang);
       logTurn('app', speech);
       return state.lastResult;
     }
@@ -1415,7 +1516,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     if (response?.ok && answer) {
       state.lastResult = { ok: true, speech: answer, answer };
       setDetail(answer);
-      speak(answer, lang);
+      if (!opts?.silent) speak(answer, lang);
       logTurn('gemini', answer);
       return state.lastResult;
     }
@@ -1425,7 +1526,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     );
     state.lastResult = { ok: false, speech };
     setDetail(speech);
-    speak(speech, lang);
+    if (!opts?.silent) speak(speech, lang);
     logTurn('app', speech);
     return state.lastResult;
   }
@@ -1465,7 +1566,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
    * query (typos, pronouns) and fly once more. Returns the replacement result
    * or null when no brain could help (original failure stands).
    */
-  async function retryFlyWithBrain(args, lang = 'en') {
+  async function retryFlyWithBrain(args, lang = 'en', opts = {}) {
     const de = lang === 'de';
     const originalQuery = String(args?.query || '').trim();
     if (!originalQuery || !doFetch) return null;
@@ -1505,7 +1606,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
           : `I could not find "${fix.query}" either.`);
       state.lastResult = { ok: outcome.ok, speech, outcomes: [outcome], retriedFrom: originalQuery };
       setDetail(speech);
-      speak(speech, lang);
+      if (!opts?.silent) speak(speech, lang);
       logTurn('app', speech, [{ name: outcome.name, ok: outcome.ok, ...(outcome.ok ? {} : { error: outcome.error }) }]);
       return state.lastResult;
     }
@@ -1517,7 +1618,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
    * target (hallucinated phrase → canonical place name) and draw once more.
    * Returns the replacement result or null when no brain could help.
    */
-  async function retryAnnotateWithBrain(args, lang = 'en') {
+  async function retryAnnotateWithBrain(args, lang = 'en', opts = {}) {
     const de = lang === 'de';
     const list = Array.isArray(args?.annotations) ? args.annotations : [];
     const originalTarget = String(list[0]?.target || args?.target || '').trim();
@@ -1561,7 +1662,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
           : `I could not mark "${fix.query}" either.`);
       state.lastResult = { ok: outcome.ok, speech, outcomes: [outcome], retriedFrom: originalTarget };
       setDetail(speech);
-      speak(speech, lang);
+      if (!opts?.silent) speak(speech, lang);
       logTurn('app', speech, [{ name: outcome.name, ok: outcome.ok, ...(outcome.ok ? {} : { error: outcome.error }) }]);
       return state.lastResult;
     }
@@ -1589,7 +1690,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       && outcomes[0].name === 'fly_to_location'
       && outcomes[0].ok === false
       && /not found|no results|ZERO_RESULTS/i.test(String(outcomes[0].error || outcomes[0].result?.error || ''))) {
-      const retried = await retryFlyWithBrain(calls[0].args, lang);
+      const retried = await retryFlyWithBrain(calls[0].args, lang, opts);
       if (retried) return retried;
     }
     // Local cross-tool fallback: a failed place flight whose query names a
@@ -1606,7 +1707,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
           const speech = lang === 'de' ? `Verfolge ${entityQuery}.` : `Tracking ${entityQuery}.`;
           state.lastResult = { ok: true, speech, outcomes: [{ name: 'track_entity', ok: true, result }], retriedFrom: entityQuery };
           setDetail(speech);
-          speak(speech, lang);
+          if (!opts.silent) speak(speech, lang);
           logTurn('app', speech, [{ name: 'track_entity', ok: true }]);
           return state.lastResult;
         }
@@ -1619,7 +1720,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     if (outcomes.length === 1
       && outcomes[0].name === 'annotate_map'
       && outcomes[0].ok === false) {
-      const retried = await retryAnnotateWithBrain(calls[0].args, lang);
+      const retried = await retryAnnotateWithBrain(calls[0].args, lang, opts);
       if (retried) return retried;
     }
     // AI reinterpretation: ANY other lone failure gets one brain attempt at
@@ -1631,17 +1732,17 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       && !opts.routed
       && typeof opts.rawText === 'string'
       && opts.rawText.trim()) {
-      const reinterpreted = await routeWithBrain(opts.rawText, lang, calls);
+      const reinterpreted = await routeWithBrain(opts.rawText, lang, calls, opts);
       if (reinterpreted) return reinterpreted;
     }
     const failed = outcomes.filter((o) => !o.ok);
     const firstError = failed.length ? (failed[0].error || failed[0].result?.error || 'unknown error') : '';
     const spoken = failed.length && outcomes.length > 1
       ? `${speech} (${failed.length} of ${outcomes.length} failed.)`
-      : (failed.length ? `That did not work: ${firstError}.` : speech);
+      : (failed.length ? (lang === 'de' ? 'Das hat leider nicht geklappt.' : `That did not work: ${firstError}.`) : speech);
     state.lastResult = { ok: !failed.length, speech: spoken, outcomes };
     setDetail(spoken);
-    speak(spoken, lang);
+    if (!opts.silent) speak(spoken, lang);
     logTurn('app', spoken, outcomes.map((o) => ({ name: o.name, ok: o.ok, ...(o.ok ? {} : { error: o.error || o.result?.error }) })));
     return state.lastResult;
   }
@@ -1658,7 +1759,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
    *
    * @returns {object|null} Executed result, or null when no brain mapped it.
    */
-  async function routeWithBrain(rawText, lang = 'en', excludeCalls = null) {
+  async function routeWithBrain(rawText, lang = 'en', excludeCalls = null, opts = {}) {
     if (!doFetch) return null;
     let history = [];
     try {
@@ -1685,22 +1786,22 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       if (!routed.name || !isCompleteRouterCall(routed.name, routed.args)) continue; // empty-args envelope
       if (excluded.has(stableActionKey(routed.name, routed.args))) continue; // never loop the same dead call
       const say = routed.say || synthRouterSay(routed.name, routed.args, lang);
-      const first = await executeCalls([{ name: routed.name, args: routed.args }], say, lang, { routed: true });
-      const chained = await maybeChainWebSearch(endpoint, endpoint.includes('/zai/') ? 'zai' : 'ollama', rawText, routed.name, first, lang);
+      const first = await executeCalls([{ name: routed.name, args: routed.args }], say, lang, { routed: true, silent: opts?.silent });
+      const chained = await maybeChainWebSearch(endpoint, endpoint.includes('/zai/') ? 'zai' : 'ollama', rawText, routed.name, first, lang, opts);
       return chained || first;
     }
     return null;
   }
 
-  async function routeUnknown(rawText, parsed) {
+  async function routeUnknown(rawText, parsed, opts = {}) {
     const fallback = () => {
       state.lastResult = { ok: false, speech: parsed.speech };
       setDetail(parsed.speech);
-      speak(parsed.speech, parsed.lang);
+      if (!opts?.silent) speak(parsed.speech, parsed.lang);
       logTurn('app', parsed.speech);
       return state.lastResult;
     };
-    const routed = await routeWithBrain(rawText, parsed.lang);
+    const routed = await routeWithBrain(rawText, parsed.lang, null, opts);
     return routed || fallback();
   }
 

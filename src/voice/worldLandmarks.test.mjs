@@ -65,10 +65,10 @@ test('early-warning descriptions resolve to Pine Gap', () => {
 });
 
 test('declined German forms resolve to the same landmark', () => {
-  // The reported failure: "helikopter landeplatz beim weissen haus".
+  // Helipad query resolves to White House Helipad:
   assert.equal(
     findWorldLandmark('markiere den helikopter landeplatz beim weissen haus')?.name,
-    'White House, Washington DC',
+    'White House Helipad / Helikopter-Landeplatz',
   );
   assert.equal(findWorldLandmark('beim weissen haus')?.name, 'White House, Washington DC');
   assert.equal(findWorldLandmark('das weisse haus in washington')?.name, 'White House, Washington DC');
@@ -78,6 +78,30 @@ test('declined German forms resolve to the same landmark', () => {
   assert.equal(findWorldLandmark('das tor'), null);
   assert.equal(findWorldLandmark('grossen see'), null);
   assert.equal(findWorldLandmark('Australien'), null);
+});
+
+test('White House Helipad and Epstein Island landmarks resolve correctly', () => {
+  const helipad = findWorldLandmark('helikopter landeplatz weisses haus');
+  assert.equal(helipad?.name, 'White House Helipad / Helikopter-Landeplatz');
+  assert.deepEqual([helipad.lat, helipad.lon], [38.8967, -77.0365]);
+  assert.equal(findWorldLandmark('hubschrauberlandeplatz weisses haus')?.name, 'White House Helipad / Helikopter-Landeplatz');
+  assert.equal(findWorldLandmark('white house south lawn helipad')?.name, 'White House Helipad / Helikopter-Landeplatz');
+
+  const mainHouse = findWorldLandmark('epstein haupthaus');
+  assert.equal(mainHouse?.name, 'Epstein Main House / Hauptgebäudekomplex');
+  assert.deepEqual([mainHouse.lat, mainHouse.lon], [18.3015, -64.8260]);
+  assert.equal(findWorldLandmark('hauptgebäudekomplex')?.name, 'Epstein Main House / Hauptgebäudekomplex');
+  assert.equal(findWorldLandmark('hauptgebaeude')?.name, 'Epstein Main House / Hauptgebäudekomplex');
+  assert.equal(findWorldLandmark('epstein anwesen')?.name, 'Epstein Main House / Hauptgebäudekomplex');
+  assert.equal(findWorldLandmark('little saint james mansion')?.name, 'Epstein Main House / Hauptgebäudekomplex');
+
+  const temple = findWorldLandmark('epstein tempel');
+  assert.equal(temple?.name, 'Epstein Temple / Tempel');
+  assert.deepEqual([temple.lat, temple.lon], [18.2983, -64.8282]);
+  assert.equal(findWorldLandmark('epsteins tempel')?.name, 'Epstein Temple / Tempel');
+  assert.equal(findWorldLandmark('the temple little saint james')?.name, 'Epstein Temple / Tempel');
+  assert.equal(findWorldLandmark('seinen tempel')?.name, 'Epstein Temple / Tempel');
+  assert.equal(findWorldLandmark('tempel auf der insel')?.name, 'Epstein Temple / Tempel');
 });
 
 test('stemming folds umlauts and adjective endings consistently', () => {
@@ -92,6 +116,9 @@ test('dict helpers stay consistent with the registry', () => {
   const aliases = worldLandmarkAliasDict();
   assert.equal(aliases['eiffelturm'], 'Eiffel Tower, Paris');
   assert.equal(aliases['freiheitsstatue'], 'Statue of Liberty, New York');
+  assert.equal(aliases['epstein tempel'], 'Epstein Temple / Tempel');
+  assert.equal(aliases['helikopter landeplatz beim weissen haus'], 'White House Helipad / Helikopter-Landeplatz');
   const coords = worldLandmarkCoordDict();
   assert.deepEqual(coords['eiffel tower, paris'], { lat: 48.8584, lon: 2.2945, label: 'Eiffel Tower, Paris' });
+  assert.deepEqual(coords['epstein temple / tempel'], { lat: 18.2983, lon: -64.8282, label: 'Epstein Temple / Tempel' });
 });

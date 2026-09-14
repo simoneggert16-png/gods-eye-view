@@ -12,7 +12,10 @@ import {
   controlRadio,
   createGevActionRunner,
   cctvVoiceFocusOutcome,
+  findCctvCameraMatch,
+  findHistoricSpacecraft,
   formatTrackedEntityLabel,
+  HISTORIC_SPACECRAFT,
   knownRadioLocation,
   normalizeStackId,
   parseLatLonQuery,
@@ -467,6 +470,65 @@ test('track_entity miss names the tried catalog query', async () => {
   const result = await runner('track_entity', { query: 'Mark Rober satellite' });
   assert.equal(result.ok, false);
   assert.ok(result.error.includes('tried "SATGUS"'), `honest tried-note, got: ${result.error}`);
+});
+
+test('findHistoricSpacecraft recognizes historic decayed spacecraft and excludes German pronouns', () => {
+  assert.equal(findHistoricSpacecraft('sputnik')?.name, 'Sputnik 1');
+  assert.equal(findHistoricSpacecraft('sputnik 1')?.name, 'Sputnik 1');
+  assert.equal(findHistoricSpacecraft('Apollo')?.name, 'Apollo');
+  assert.equal(findHistoricSpacecraft('apollo 11')?.name, 'Apollo');
+  assert.equal(findHistoricSpacecraft('challenger')?.name, 'Challenger');
+  assert.equal(findHistoricSpacecraft('mir')?.name, 'Mir');
+  assert.equal(findHistoricSpacecraft('die mir')?.name, 'Mir');
+  assert.equal(findHistoricSpacecraft('Raumstation Mir')?.name, 'Mir');
+
+  // Must not misfire on German pronoun "mir" or active spacecraft
+  assert.equal(findHistoricSpacecraft('zeig mir ein Flugzeug'), null);
+  assert.equal(findHistoricSpacecraft('ISS'), null);
+  assert.equal(findHistoricSpacecraft('HST'), null);
+});
+
+test('track_entity for historic spacecraft (sputnik) explains deorbit and suggests active spacecraft', async () => {
+  globalThis.window = globalThis.window || { clearTimeout, setTimeout, requestIdleCallback: null };
+  const { viewer, styleManager } = createVoiceNavigationHarness();
+  const enabled = new Set();
+  const dataManager = {
+    layers: new Map([['satellites', { module: { findByQuery: () => null } }]]),
+    isEnabled: (id) => enabled.has(id),
+    setEnabled: async (id, value) => { if (value) enabled.add(id); return true; },
+    getAll: () => [],
+  };
+  const runner = createGevActionRunner({ viewer, styleManager, dataManager });
+
+  const result = await runner('track_entity', { query: 'sputnik' });
+  assert.equal(result.ok, false);
+  assert.equal(result.historic, true);
+  assert.ok(result.error.includes('1958'), 'error mentions 1958');
+  assert.ok(result.error.includes('deorbited'), 'error mentions deorbited');
+  assert.ok(result.error.includes('ISS') || result.suggestions.includes('ISS'), 'mentions active spacecraft');
+  assert.ok(result.error.includes('Starlink') || result.suggestions.includes('Starlink'), 'mentions Starlink');
+  assert.doesNotMatch(result.error, /Nothing matched/);
+  assert.ok(enabled.has('satellites'), 'auto-enables satellites layer to show active orbit');
+
+  // Mir
+  const mirResult = await runner('track_entity', { query: 'Mir' });
+  assert.equal(mirResult.ok, false);
+  assert.equal(mirResult.historic, true);
+  assert.ok(mirResult.error.includes('Mir'));
+  assert.ok(mirResult.error.includes('2001') || mirResult.error.includes('deorbited'));
+  assert.doesNotMatch(mirResult.error, /Nothing matched/);
+
+  // Apollo
+  const apolloResult = await runner('track_entity', { query: 'apollo 11' });
+  assert.equal(apolloResult.ok, false);
+  assert.equal(apolloResult.historic, true);
+  assert.doesNotMatch(apolloResult.error, /Nothing matched/);
+
+  // Challenger
+  const challengerResult = await runner('track_entity', { query: 'challenger' });
+  assert.equal(challengerResult.ok, false);
+  assert.equal(challengerResult.historic, true);
+  assert.doesNotMatch(challengerResult.error, /Nothing matched/);
 });
 
 test('voice Stop Tracking clears all durable tracker IDs even without active trackers', async () => {
@@ -3318,3 +3380,80 @@ test('web_search returns sourced facts and honest failures', async () => {
     globalThis.fetch = priorFetch;
   }
 });
+
+test('createGevActionRunner accepts cam, camera, and cctv aliases and routes them to control_cctv', async () => {
+  let enabled = false;
+  const cctv = {
+    getUIState: () => ({ activeCameraId: null, cameras: [{ id: 'cam-1', name: 'Tower Bridge' }] }),
+    selectCamera: () => true,
+    focusCamera: () => 'camera_focused',
+  };
+  const dataManager = {
+    layers: new Map([['cctv', { module: cctv }]]),
+    isEnabled: () => enabled,
+    setEnabled: async (_id, on) => { enabled = on; },
+  };
+  const viewer = {
+    clock: { onTick: { addEventListener: () => () => {} } },
+    scene: { canvas: { addEventListener() {}, removeEventListener() {} } },
+    camera: { moveEnd: { addEventListener: () => () => {} } },
+  };
+  const runner = createGevActionRunner({
+    viewer,
+    styleManager: {},
+    dataManager,
+  });
+
+  // Calling 'cam' with location
+  const res1 = await runner('cam', { location: 'Tower Bridge' });
+  assert.equal(res1.action, 'control_cctv');
+  assert.equal(res1.selected, 'Tower Bridge');
+  assert.equal(enabled, true, 'auto-enables CCTV layer');
+
+  // Calling 'camera' with query
+  const res2 = await runner('camera', { query: 'Tower Bridge' });
+  assert.equal(res2.action, 'control_cctv');
+
+  // Calling 'cctv' with enable action
+  const res3 = await runner('cctv', { action: 'enable' });
+  assert.equal(res3.action, 'control_cctv');
+  assert.equal(res3.ok, true);
+
+  // Calling 'track_named_cameras' with query
+  const res4 = await runner('track_named_cameras', { query: 'Tower Bridge' });
+  assert.equal(res4.action, 'control_cctv');
+  assert.equal(res4.selected, 'Tower Bridge');
+
+  // Calling 'track_entity' with camera query forwards to control_cctv
+  const res5 = await runner('track_entity', { query: 'Tower Bridge camera' });
+  assert.equal(res5.action, 'control_cctv');
+  assert.equal(res5.selected, 'Tower Bridge');
+});
+
+test('findCctvCameraMatch resolves exact, name substring, city, and multi-token queries', () => {
+  const sampleCams = [
+    { id: 'tfl-00001.06502', name: 'Trafalgar Square', city: 'London', cityId: 'london' },
+    { id: 'tfl-00001.03488', name: 'Tower Bridge Rd/Rothsay St', city: 'London', cityId: 'london' },
+    { id: 'tfl-00001.03500', name: 'Tower Bridge App./East Smithfield', city: 'London', cityId: 'london' },
+    { id: 'atx-354', name: '5TH ST / CONGRESS AVE', city: 'Austin', cityId: 'austin' },
+  ];
+
+  // Exact ID and name
+  assert.equal(findCctvCameraMatch(sampleCams, 'tfl-00001.06502')?.id, 'tfl-00001.06502');
+  assert.equal(findCctvCameraMatch(sampleCams, 'Trafalgar Square')?.id, 'tfl-00001.06502');
+
+  // Name contains query
+  assert.equal(findCctvCameraMatch(sampleCams, 'Trafalgar')?.id, 'tfl-00001.06502');
+  assert.equal(findCctvCameraMatch(sampleCams, 'Congress Ave')?.id, 'atx-354');
+
+  // Exact city
+  assert.equal(findCctvCameraMatch(sampleCams, 'Austin')?.id, 'atx-354');
+  assert.equal(findCctvCameraMatch(sampleCams, 'London')?.city, 'London');
+
+  // Cleaned query with stop words
+  assert.equal(findCctvCameraMatch(sampleCams, 'tower bridge in london')?.name.includes('Tower Bridge'), true);
+  assert.equal(findCctvCameraMatch(sampleCams, 'der tower bridge in london')?.name.includes('Tower Bridge'), true);
+  assert.equal(findCctvCameraMatch(sampleCams, 'zeig mir eine cctv kamera in London')?.city, 'London');
+});
+
+

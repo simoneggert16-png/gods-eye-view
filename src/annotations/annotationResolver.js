@@ -115,7 +115,8 @@ export async function resolveAnnotationTarget({
   // Guard bypass is an ASK-SIDE fact. A returned admin type can be a wrong match
   // ("the Texas Capitol" → the state), so geocode types must never grant it.
   const isIslandAsk = /\b(?:island|islet|isle|archipelago|insel|inseln)\b/i.test(String(target || ''));
-  const bypassNearViewGuards = Boolean(flyTo || isIslandAsk || adminScopeFromAsk(target, entityKind));
+  const isLandmark = Boolean(findWorldLandmark(target));
+  const bypassNearViewGuards = Boolean(flyTo || isIslandAsk || isLandmark || adminScopeFromAsk(target, entityKind));
 
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
     const query = String(target || '').trim();

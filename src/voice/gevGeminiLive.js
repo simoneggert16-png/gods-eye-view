@@ -532,6 +532,7 @@ export function createGeminiLiveController({
       } else if (event.type === 'interrupted') {
         stopAudio();
       } else if (event.type === 'turnComplete' || event.type === 'generationComplete') {
+        state.reconnects = 0;
         const transcript = state.inputTranscript.trim();
         state.inputTranscript = '';
         const spoken = String(state.outputTranscript || '').trim();

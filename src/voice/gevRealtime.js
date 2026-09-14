@@ -1,5 +1,5 @@
 import { createGevActionRunner, readLayerLifecycleSummary } from './gevActions.js';
-import { createFreeVoiceController } from './gevFreeVoice.js';
+import { createFreeVoiceController, resumeGoogleTTSAudio } from './gevFreeVoice.js';
 import { attachConversationLog, createConversationLog, isVoiceHelpRetired, mirrorToServer } from './gevConversationLog.js';
 import { createGeminiLiveController, createLiveAudioOutput } from './gevGeminiLive.js';import {
   DEFAULT_VOICE_TIER,
@@ -255,6 +255,7 @@ export function initGevVoiceCommands({ viewer, styleManager, dataManager, sceneD
     });
   }
   controller.buttonHandler = () => {
+    resumeGoogleTTSAudio();
     if (shouldIgnoreVoiceButtonClick(controller.spaceKeyHeld)) return;
     if (controller.isActive()) { controller.stop(); return; }
     if (liveVoice.isActive()) { liveVoice.stop(); return; }
@@ -417,6 +418,7 @@ function attachFreeVoiceTextInput(ui, freeVoice, liveVoice = null) {
     form.append(input, send);
     form.addEventListener('submit', (event) => {
       event.preventDefault();
+      resumeGoogleTTSAudio();
       const text = input.value;
       if (!String(text || '').trim()) return;
       input.value = '';
@@ -431,7 +433,9 @@ function attachFreeVoiceTextInput(ui, freeVoice, liveVoice = null) {
         }
       } catch { /* drawer is best effort */ }
       if (liveVoice?.isActive?.() && typeof liveVoice?.sendText === 'function') {
-        if (!liveVoice.sendText(text) && typeof freeVoice?.handleText === 'function') {
+        if (!liveVoice.sendText(text) && typeof freeVoice?.handleChatText === 'function') {
+          void freeVoice.handleChatText(text);
+        } else if (!liveVoice.sendText(text) && typeof freeVoice?.handleText === 'function') {
           void freeVoice.handleText(text);
         }
         return;

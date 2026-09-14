@@ -11,7 +11,7 @@ import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import createViteConfig, { fetchOverpassPayload, overpassPayloadIsData, readOverpassDisk } from '../vite.config.js';
+import createViteConfig, { fetchOverpassPayload, overpassPayloadIsData, readOverpassDisk, OVERPASS_UPSTREAMS } from '../vite.config.js';
 
 const ENDPOINTS = ['https://a.example/api', 'https://b.example/api', 'https://c.example/api'];
 
@@ -214,7 +214,7 @@ test('coalesced outage callers both receive last-good data, never a cached refus
         assert.equal(response.body, DATA.body);
         assert.equal(response.headers['X-Overpass-Cache'], 'STALE');
       }
-      assert.equal(fetches, 4, 'one shared, bounded mirror sequence');
+      assert.equal(fetches, OVERPASS_UPSTREAMS.length, 'one shared, bounded mirror sequence');
       assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), stale);
     } finally {
       release.resolve();

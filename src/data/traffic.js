@@ -66,6 +66,12 @@ const MIN_CENTER_SHIFT_KM = 0.35;
  * pulled back toward nadir (C4 oblique-bounds fix).
  */
 const MAX_LOOKAT_PULL_KM = 12;
+/** @const {number} Max synchronous sampleHeight calls per road-parsing batch */
+const MAX_BATCH_SAMPLE_HEIGHT_CALLS = 16;
+/** @const {number} Max entries in coarse road height cache before clearing */
+const MAX_ROAD_HEIGHT_CACHE_SIZE = 4096;
+/** Coarse spatial cache (~111m grid cells) for road surface heights */
+const _roadHeightCache = new Map();
 /**
  * Development-only causal timing. Vite folds `import.meta.env.DEV` to false
  * in production, so the query-string read, nullable trace branches, and every
@@ -548,6 +554,8 @@ function parseRoads(overpassData) {
   if (!overpassData || !overpassData.elements) return [];
 
   const roads = [];
+  let _batchSampleHeightCount = 0;
+  let _lastSampledRoadHeight = 0;
   for (const el of overpassData.elements) {
     if (el.type !== 'way' || !el.geometry || el.geometry.length < 2) continue;
 
@@ -581,13 +589,35 @@ function parseRoads(overpassData) {
       ? 1
       : (onewayTag === '-1' ? -1 : 0);
 
-    // Sample terrain height once at the road start to avoid per-vertex cost
+    // Sample terrain height with spatial cell caching (~111m) and bounded budget
     let baseHeight = 0;
     const firstCoord = coords[0];
-    if (_viewer?.scene?.sampleHeightSupported && firstCoord) {
-      const carto = Cesium.Cartographic.fromDegrees(firstCoord[0], firstCoord[1]);
-      const sampled = _viewer.scene.sampleHeight(carto);
-      if (Number.isFinite(sampled)) baseHeight = sampled;
+    if (firstCoord) {
+      const cellKey = `${firstCoord[1].toFixed(3)},${firstCoord[0].toFixed(3)}`;
+      const cached = _roadHeightCache.get(cellKey);
+      if (cached !== undefined) {
+        baseHeight = cached;
+      } else {
+        const carto = Cesium.Cartographic.fromDegrees(firstCoord[0], firstCoord[1]);
+        const globeHeight = _viewer?.scene?.globe?.getHeight(carto);
+        if (Number.isFinite(globeHeight)) {
+          baseHeight = globeHeight;
+          _lastSampledRoadHeight = globeHeight;
+        } else if (_viewer?.scene?.sampleHeightSupported && _batchSampleHeightCount < MAX_BATCH_SAMPLE_HEIGHT_CALLS) {
+          _batchSampleHeightCount++;
+          const sampled = _viewer.scene.sampleHeight(carto);
+          if (Number.isFinite(sampled)) {
+            baseHeight = sampled;
+            _lastSampledRoadHeight = sampled;
+          } else {
+            baseHeight = _lastSampledRoadHeight;
+          }
+        } else {
+          baseHeight = _lastSampledRoadHeight;
+        }
+        if (_roadHeightCache.size >= MAX_ROAD_HEIGHT_CACHE_SIZE) _roadHeightCache.clear();
+        _roadHeightCache.set(cellKey, baseHeight);
+      }
     }
 
     // Pre-compute Cartesian3 waypoints (lon, lat, height) for fast lerp animation
@@ -1845,6 +1875,8 @@ function parseRoadsTimed(overpassData, trace) {
   }
 
   const roads = [];
+  let _batchSampleHeightCount = 0;
+  let _lastSampledRoadHeight = 0;
   /* TRACE_ONLY_BEGIN */
   const _trafficTimingSampledCells = new Set();
   let _trafficTimingSampleHeightCalls = 0;
@@ -1876,22 +1908,43 @@ function parseRoadsTimed(overpassData, trace) {
       ? 1
       : (onewayTag === '-1' ? -1 : 0);
 
+    // Sample terrain height with spatial cell caching (~111m) and bounded budget
     let baseHeight = 0;
     const firstCoord = coords[0];
-    if (_viewer?.scene?.sampleHeightSupported && firstCoord) {
-      /* TRACE_ONLY_BEGIN */
-      _trafficTimingSampleHeightCalls += 1;
-      _trafficTimingSampledCells.add(`${firstCoord[1].toFixed(3)},${firstCoord[0].toFixed(3)}`);
-      /* TRACE_ONLY_END */
-      const carto = Cesium.Cartographic.fromDegrees(firstCoord[0], firstCoord[1]);
-      /* TRACE_ONLY_BEGIN */
-      const _trafficTimingSampleStart = performance.now();
-      /* TRACE_ONLY_END */
-      const sampled = _viewer.scene.sampleHeight(carto);
-      /* TRACE_ONLY_BEGIN */
-      _trafficTimingSampleHeightMs += performance.now() - _trafficTimingSampleStart;
-      /* TRACE_ONLY_END */
-      if (Number.isFinite(sampled)) baseHeight = sampled;
+    if (firstCoord) {
+      const cellKey = `${firstCoord[1].toFixed(3)},${firstCoord[0].toFixed(3)}`;
+      const cached = _roadHeightCache.get(cellKey);
+      if (cached !== undefined) {
+        baseHeight = cached;
+      } else {
+        const carto = Cesium.Cartographic.fromDegrees(firstCoord[0], firstCoord[1]);
+        const globeHeight = _viewer?.scene?.globe?.getHeight(carto);
+        if (Number.isFinite(globeHeight)) {
+          baseHeight = globeHeight;
+          _lastSampledRoadHeight = globeHeight;
+        } else if (_viewer?.scene?.sampleHeightSupported && _batchSampleHeightCount < MAX_BATCH_SAMPLE_HEIGHT_CALLS) {
+          _batchSampleHeightCount++;
+          /* TRACE_ONLY_BEGIN */
+          _trafficTimingSampleHeightCalls += 1;
+          _trafficTimingSampledCells.add(cellKey);
+          const _trafficTimingSampleStart = performance.now();
+          /* TRACE_ONLY_END */
+          const sampled = _viewer.scene.sampleHeight(carto);
+          /* TRACE_ONLY_BEGIN */
+          _trafficTimingSampleHeightMs += performance.now() - _trafficTimingSampleStart;
+          /* TRACE_ONLY_END */
+          if (Number.isFinite(sampled)) {
+            baseHeight = sampled;
+            _lastSampledRoadHeight = sampled;
+          } else {
+            baseHeight = _lastSampledRoadHeight;
+          }
+        } else {
+          baseHeight = _lastSampledRoadHeight;
+        }
+        if (_roadHeightCache.size >= MAX_ROAD_HEIGHT_CACHE_SIZE) _roadHeightCache.clear();
+        _roadHeightCache.set(cellKey, baseHeight);
+      }
     }
 
     /* TRACE_ONLY_BEGIN */
@@ -2269,8 +2322,16 @@ const trafficLayer = {
     // first load commits, then self-clear. Also acts as a safety kick if a
     // failed first fetch left the viewport unloaded while parked.
     clearInterval(_enableKickTimer);
+    let _kickCount = 0;
     _enableKickTimer = setInterval(() => {
-      if (!_enabled || _lastUpdate) {
+      _kickCount++;
+      if (!_enabled || _lastUpdate || _kickCount > 6) {
+        clearInterval(_enableKickTimer);
+        _enableKickTimer = null;
+        return;
+      }
+      const alt = getCameraAltitude();
+      if (alt > ACTIVATION_ALTITUDE) {
         clearInterval(_enableKickTimer);
         _enableKickTimer = null;
         return;

@@ -5,8 +5,8 @@
  * colloquial German names ("Eiffelturm", "Freiheitsstatue", "Kölner Dom")
  * often miss, and every miss costs a seconds-long upstream roundtrip.
  * This registry resolves them instantly with hand-checked coordinates —
- * no network, no quota, no guessing. Epstein Island stays in the backend
- * geocode dict; everything else worldwide lives here.
+ * no network, no quota, no guessing. Contains worldwide landmarks and
+ * curated sites including Epstein Island / Little Saint James.
  *
  * Pure: no DOM, no Cesium, no network — importable from both the browser
  * (src/locations.js, src/voice/gevActions.js) and node (vite.config.js).
@@ -88,10 +88,14 @@ export const WORLD_LANDMARKS = Object.freeze([
   { name: 'Hollywood Sign, Los Angeles', lat: 34.1341, lon: -118.3215, kind: 'place', aliases: ['hollywood sign', 'hollywood schriftzug', 'hollywood zeichen'] },
   { name: 'Space Needle, Seattle', lat: 47.6205, lon: -122.3493, kind: 'building', aliases: ['space needle', 'space needle seattle'] },
   { name: 'White House, Washington DC', lat: 38.8977, lon: -77.0365, kind: 'building', aliases: ['white house', 'weißes haus', 'weisses haus', 'weißes haus washington'] },
+  { name: 'White House Helipad / Helikopter-Landeplatz', lat: 38.8967, lon: -77.0365, kind: 'place', aliases: ['white house helipad', 'helikopter landeplatz beim weissen haus', 'helikopter landeplatz weisses haus', 'hubschrauberlandeplatz weisses haus', 'white house south lawn helipad'] },
   { name: 'US Capitol, Washington DC', lat: 38.8897, lon: -77.0091, kind: 'building', aliases: ['us capitol', 'kapitol', 'kapitol washington', 'capitol hill'] },
   { name: 'Grand Canyon', lat: 36.1069, lon: -112.1129, kind: 'place', aliases: ['grand canyon'] },
   { name: 'Yellowstone Old Faithful', lat: 44.4605, lon: -110.8283, kind: 'place', aliases: ['old faithful', 'yellowstone', 'yellowstone nationalpark'] },
   { name: 'Mount Rushmore', lat: 43.8791, lon: -103.4591, kind: 'place', aliases: ['mount rushmore', 'rushmore'] },
+  // ---- Caribbean / Little Saint James (Epstein Island) ---------------------
+  { name: 'Epstein Main House / Hauptgebäudekomplex', lat: 18.3015, lon: -64.8260, kind: 'building', aliases: ['epstein main house', 'epstein haupthaus', 'hauptgebäudekomplex', 'hauptgebaeude', 'hauptgebäudekomplex epstein', 'epstein anwesen', 'little saint james main house', 'little saint james mansion'] },
+  { name: 'Epstein Temple / Tempel', lat: 18.2983, lon: -64.8282, kind: 'building', aliases: ['epstein temple', 'epstein tempel', 'epsteins tempel', 'the temple little saint james', 'little saint james temple', 'seinen tempel', 'tempel auf der insel'] },
   // ---- Latin America --------------------------------------------------------
   { name: 'Christ the Redeemer, Rio', lat: -22.9519, lon: -43.2105, kind: 'building', aliases: ['christ the redeemer', 'cristo redentor', 'christusstatue rio', 'christus rio', 'jesusstatue rio'] },
   { name: 'Machu Picchu', lat: -13.1631, lon: -72.545, kind: 'place', aliases: ['machu picchu'] },

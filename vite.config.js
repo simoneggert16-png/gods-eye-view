@@ -219,14 +219,12 @@ const OPENSKY_SOURCE_STALE_MS = 120_000;
 // Overpass API proxy constants and cache state
 // ---------------------------------------------------------------------------
 /** Ordered list of Overpass API mirrors; tried sequentially on failure/rate-limit. */
-const OVERPASS_UPSTREAMS = [
-  'https://overpass-api.de/api/interpreter',
+export const OVERPASS_UPSTREAMS = [
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+  'https://overpass.osm.ch/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass-api.de/api/interpreter',
   'https://lz4.overpass-api.de/api/interpreter',
-  // Community full-planet instance (privateforge nonprofit) — added 2026-07-30
-  // when all three mirrors above refused this IP (likely a dev-traffic rate
-  // ban; refused connections fail in ms, so healthy mirrors above still win).
-  // Verified: planet coverage (Texas query), CORS *, ~5-20 s cold latency.
   'https://overpass.private.coffee/api/interpreter',
 ];
 /**
@@ -251,7 +249,7 @@ const OVERPASS_BOUNDARY_DISK_TTL_MS = 30 * 86_400_000;
 /** Disk-cache directory for Overpass responses. */
 const OVERPASS_DISK_DIR = path.join(process.cwd(), '.gev-cache', 'overpass');
 /** Per-upstream fetch timeout (ms). */
-const OVERPASS_TIMEOUT_MS = 22000;
+const OVERPASS_TIMEOUT_MS = 10000;
 /** Max entries in the Overpass response cache (LRU-like, oldest evicted first). */
 const OVERPASS_CACHE_MAX_ENTRIES = 120;
 /** @type {Map<string,{status:number,body:string,contentType:string,endpoint:string,cachedAt:number}>} */
