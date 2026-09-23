@@ -28,14 +28,14 @@ export const ROUTER_TOOLS = Object.freeze([
   'fly_to_location {query | locationId | latitude + longitude as SEPARATE numbers, viewMode?: close|overview} — fly/zoom to a PLACE (resolves pronouns like "diesen Wald"/"dorthin"/"it" from history + scene!). When you know exact coordinates of a famous place, pass latitude and longitude as two separate numbers, never packed into query',
   'adjust_camera_zoom {direction: in|out, amount: little|medium|lot} — relative zoom, no place',
   'zoom_to_globe {} — full Earth view',
-  'set_layer_visibility {layerId, enabled} — layers: flights, military, satellites, earthquakes, traffic, cctv, radio, bikeshare, ais-live-vessels, local-firms, local-datacenters, local-dams, telegeography-submarine-cables, rocket-launches',
+  'set_layer_visibility {layerId, enabled} — layers: flights, military, satellites, earthquakes, traffic, cctv, radio, bikeshare, ais-live-vessels, local-firms, local-datacenters, local-dams, telegeography-submarine-cables, rocket-launches, conflicts, frontlines, missile-strikes, battles, bombardments, missile-tests, military-convoys, campaign-trails, secret-service, drone-attacks, terror-attacks, live-osint',
   'show_data_layers_menu {layerId?} — open the layers menu, optionally highlight one row',
   'set_panel_open {panelId, open} — panels: data-panel, location-bar, control-panel, cctv-panel, radio-panel, scene-panel, pp-toggles, global-context-panel',
   'set_visual_style {style: normal|retro|surveillance|thermal|anime|noir|snow} — night vision=nvg=surveillance, heat=thermal/flir',
   'set_post_processing {bloom?: {enabled, intensityPct}, sharpen?: {enabled, intensityPct}}',
   'control_cockpit {action: enter|exit|next|previous} — ride/ditch the tracked plane',
-  'select_nearest_aircraft {layerId: flights|military} — nearest plane + follow',
-  'track_entity {query} — follow a plane/ship/satellite/fire by name or description ("fire" = strongest fire; "Mark Rober satellite" = SATGUS; "Hubble" = HST). Use this for ANY satellite/ship/aircraft mention, never fly_to_location',
+  'select_nearest_aircraft {layerId: flights|military, locationQuery?, differentFromSelected?} — pick/follow the nearest or generic aircraft. For "over/near/in PLACE", ALWAYS pass locationQuery. For "another/next/different", pass differentFromSelected:true and keep the prior place',
+  'track_entity {query} — follow a named/identified plane, ship, satellite, or fire (\"SATGUS\", \"Hubble\"/\"HST\", callsign, ICAO hex, registration, MMSI); \"fire\" = strongest fire; \"nearest satellite\" = nearest live satellite. Never use this for generic or nearest aircraft',
   'stop_tracking {} — stop following',
   'set_context_mode {mode: off|contacts|space-missions} — contacts roster / missions view',
   'set_hud {visible?: on|off, layout?: tactical|operator|minimal}',
@@ -45,7 +45,7 @@ export const ROUTER_TOOLS = Object.freeze([
   'get_current_view_state {} — read camera/layers/state',
   'control_scene {action: list|play|stop|next, sceneId?}',
   'control_radio {action: enable|disable|play|resume|pause|stop|next|previous|volume|select, category?, locationQuery?}',
-  'control_cctv {action: select|nearest|enable|disable|next|prev|focus|coverage|viewshed, cameraQuery?} — SHOW OR VIEW CCTV / WEBCAM / CAMERAS in any city, place, landmark, or street (e.g. London, Austin, Tower Bridge). Use action: "select" and cameraQuery: "<place or camera name>" for "zeig mir eine kamera in X" / "show me a camera in X" / "kamera bei X" / "cctv in X"',
+  'control_cctv {action: select|nearest|enable|disable|next|prev|focus|coverage|viewshed|analyze, cameraQuery?} — SHOW, VIEW, OR ANALYZE CCTV / WEBCAM / CAMERAS in any city, place, landmark, or street (e.g. Diepoldsau, Zürich, London, Austin). Use action: "select" and cameraQuery: "<place or camera name>" for "zeig mir eine kamera in X", or action: "analyze" for "was sieht die kamera in X" / "analysiere kamera in X"',
   'annotate_map {annotations: [{type: area|pin|route, target, entityKind?: country|state|city|neighborhood|building|address}], flyTo?: boolean, persist?: boolean} — DRAW, OUTLINE, OR SHOW BOUNDARIES of any country, state, region, city, address, or landmark. When the user asks to draw or outline (e.g. "zeichne X ein", "umrande X", "outline X", "mark borders of X"), ALWAYS call annotate_map with type: "area", target: "<clean place name>", and flyTo: true.',
   'clear_annotations {} — ONLY on explicit clear asks',
   'analyst_query {layers, scope?, filters?, sortBy?, limit?} — COUNT/LIST questions over live data (never navigates)',
@@ -54,6 +54,12 @@ export const ROUTER_TOOLS = Object.freeze([
   'fly_route {} — fly the drawn route',
   'next_iss_pass {} — when is the ISS overhead next',
   'web_search {query} — look up a FACT on the web (tallest building, biggest X, population, events) when you do not reliably know it; you get sourced results back, then make the map call',
+  'fly_to_nearest_tactical_target {category?} — fly to the nearest tactical target, drone attack, or missile strike with a safe overview altitude (e.g. 6000-12000m)',
+  'mark_tactical_impact_zone {latitude?, longitude?, radiusM?, zoomIn?: boolean, label?} — mark the affected area or impact zone of an attack with a circular perimeter and optional close zoom',
+  'describe_tactical_event {latitude?, longitude?} — retrieve military sitrep and BDA for the tactical event at the location',
+  'query_osint_news {query?, limit?} — retrieve real-time Telegram / OSINT dispatches and breaking military news for a topic, region, or conflict zone (e.g. Charkiw, Drohnen, Raketen, Nahost)',
+  'query_financial_market_impact {asset?, query?} — retrieve real-time financial market data (Brent Oil, Gold, S&P 500, VIX, defense stocks, crypto) and geopolitical impact analysis connecting world events to markets',
+  'search_and_forecast_asset {query, asset?, symbol?} — deep dive forecast and 1-3 month price target corridor for a specific stock, commodity, or asset (e.g. Rheinmetall, NVDA, Gold, Brent, Tesla)',
 ]);
 
 /** System prompt for routing turns. */
@@ -62,10 +68,19 @@ export const ROUTER_SYSTEM_PROMPT = [
   'Use the conversation history to resolve pronouns and references ("seine Insel", "dorthin", "it", "there") to the real place or thing meant.',
   '1. MAP ACTIONS: Pick the single best tool from the menu. Prefer navigation with a real place name over relative moves when a place is meant.',
   'When the user asks to draw, outline, or show boundaries of any place, country, state, region, island, city, or address (e.g. "zeichne ... ein", "umrande ...", "outline ..."), ALWAYS use annotate_map with type: "area" and flyTo: true. Translate colloquial nicknames or German place names to standard international/English names if helpful (e.g. "Epsteins Insel" -> "Epstein Island" or "Little Saint James", "Osterinsel" -> "Easter Island").',
-  '"Zoom into X / zoome in X rein" with a named or previously mentioned place means fly_to_location with viewMode close, not a relative nudge. World-famous buildings resolve directly worldwide (not just one island): map German names to canonical English ones (e.g. "Eiffelturm" -> "Eiffel Tower, Paris", "Freiheitsstatue" -> "Statue of Liberty", "Kölner Dom" -> "Cologne Cathedral", "Brandenburger Tor" -> "Brandenburg Gate", "Epsteins bekanntes Gebäude / Tempel" -> "Epstein temple"). When you know exact coordinates of a famous place, prefer latitude + longitude as two separate numbers.',
-  'TRACKABLE ENTITIES (satellites, ships, aircraft — never geocode these!): when the utterance names a satellite ("Satellit", "satellite", "ISS", "Mark Robers Satellit", "Hubble", "Webb"), a ship ("Schiff", "ship", "vessel"), or an aircraft ("Flugzeug", "plane", "Flieger"), ALWAYS use track_entity with the plain name as query — never fly_to_location. Famous mappings: "Mark Robers Satellit / Mark Rober satellite" -> query "SATGUS", "Hubble" -> "HST", "James Webb" -> "JWST". The layer enables itself.',
+  '"Zoom into X / zoome in X rein" with a named building, street, or POI means fly_to_location with viewMode close, not a relative nudge. World-famous buildings resolve directly worldwide (not just one island): map German names to canonical English ones (e.g. "Eiffelturm" -> "Eiffel Tower, Paris", "Freiheitsstatue" -> "Statue of Liberty", "Kölner Dom" -> "Cologne Cathedral", "Brandenburger Tor" -> "Brandenburg Gate", "Epsteins bekanntes Gebäude / Tempel" -> "Epstein temple"). When you know exact coordinates of a famous place, prefer latitude + longitude as two separate numbers.',
+  'COUNTRIES / STATES / REGIONS ("zeig mir Iran", "kannst du mir Iran zeigen", "take me to Japan", "fliege nach Deutschland"): ALWAYS call fly_to_location with query: "<country/region>" without viewMode: "close" (or viewMode: "overview"). Never use viewMode: "close" for whole countries or states — they must be framed in whole-country/regional overview so the user can see the country, never zoomed down to a few hundred meters in the ground.',
+  'TRACKABLE ENTITIES (satellites, ships, aircraft — never geocode these!): when the utterance names a specific satellite ("ISS", "Mark Robers Satellit", "Hubble", "Webb"), ship ("Ever Given"), or aircraft identity (callsign, hex, registration), ALWAYS use track_entity with that identity — never fly_to_location. Famous mappings: "Mark Robers Satellit / Mark Rober satellite" -> query "SATGUS", "Hubble" -> "HST", "James Webb" -> "JWST". The layer enables itself.',
+  'GENERIC / NEAREST AIRCRAFT: "show me a military flight", "zeige mir einen Militärflug", "any plane", "ein Flugzeug", or "nearest aircraft" is NOT a name lookup. Use select_nearest_aircraft with layerId "military" for military wording, otherwise "flights". For several objects or traffic overhead, use frame_overhead. Only use track_entity when a specific identity is named.',
+  'GENERIC / NEAREST SATELLITE: \"show me a satellite\", \"zeige mir einen Satelliten\", including the common misspelling \"Sateliten\", or \"nearest satellite\" means track_entity with query \"nearest satellite\" (the satellites layer enables itself). \"ein anderer Satellit\", \"einen anderen Satelliten\", \"another satellite\", or \"different satellite\" after a previously tracked satellite means track_entity with query \"nearest satellite\" AND differentFromSelected:true — a DIFFERENT satellite must be picked, never the one already followed. For several satellites or traffic overhead, use frame_overhead with target \"satellites\". A concrete identity such as ISS, Hubble, or SATGUS still uses track_entity with that identity.',
+  'NEAREST-AIRCRAFT PLACES: "flugzeug über Japan", "plane over Japan", "aircraft near Austin", or any other over/near/in PLACE phrasing MUST pass locationQuery with that place. NEVER omit the place and silently use the current camera. For "ein anderes", "another", "next", or "different" after a previous aircraft, pass differentFromSelected:true and preserve the previous place from history/context.',
+  'SELECTED OBJECT QUESTIONS: "was macht dieses Flugzeug" (including the common typo "was nacht"), "what does this aircraft do", "what is this satellite/ship", or any question about the currently selected object MUST call get_entity_context with scope "selected" FIRST, then answer from its returned properties. Never ask the user which object while one is selected.',
   'CAMERAS / CCTV IN A PLACE ("kamera in X", "cameras in X", "cctv in X", "zeig mir eine kamera in X", "show me cameras in X"): The tool name is strictly "control_cctv" (NEVER "cam" or "camera"). ALWAYS call control_cctv with action: "select" and cameraQuery: "<clean place name>" (e.g. {"name": "control_cctv", "args": {"action": "select", "cameraQuery": "Tower Bridge, London"}, "say": "Öffne Kameras an der Tower Bridge in London."}), or set_layer_visibility for cctv and fly_to_location to the place. NEVER apologize, refuse, or say you cannot find or show a camera — ALWAYS emit a control_cctv tool call for ANY camera/cctv/webcam request.',
   'SHOW + DRAW COMBOS ("zeig mir X und zeichne es ein", "show me X and mark it"): use ONE annotate_map call with flyTo: true — it flies there AND draws. Always use the canonical English place name as target (e.g. "Frühwarnsystem mit Kuppeln in Australien" -> target "Joint Defence Facility Pine Gap", never a made-up phrase like "Frühwarnsystem bei Jervis Bay"). If you are unsure which place is meant, ask briefly instead of guessing a target.',
+  'TACTICAL & MILITARY LAYERS ("zeig mir Drohnenangriffe", "zeige mir einen Drohnenangriff", "show me drone attacks", "zeig mir Terroranschläge", "zeig mir Raketenangriffe", "zeig mir Bombardements", "zeig mir Frontlinien"): ALWAYS enable the corresponding layer with set_layer_visibility (e.g. drone-attacks, terror-attacks, missile-strikes, bombardments, battles, frontlines, conflicts, missile-tests, military-convoys, campaign-trails, secret-service) and NEVER call fly_to_location with the attack or weapon type name as a query! For "zeig mir einen Drohnenangriff", call set_layer_visibility with layerId: "drone-attacks" and enabled: true (e.g. {"name": "set_layer_visibility", "args": {"layerId": "drone-attacks", "enabled": true}, "say": "Zeige Drohnenangriffe."}).',
+  'TACTICAL IMPACT ZONES & ATTACKS ("markiere das betroffene Gebiet", "markiere die Einschlagszone", "zoom rein und markiere das Gebiet", "fliege zu einem hin", "erzähl mir was drüber"): When the user asks to mark the affected area or strike zone of an attack, ALWAYS call mark_tactical_impact_zone (pass zoomIn: true if the user asks to zoom). When the user asks "fliege zu einem hin" or to jump to an attack, call fly_to_nearest_tactical_target. When the user asks "erzähl mir was drüber", "was ist hier passiert", or asks about the attack, use describe_tactical_event or answer using the tacticalIntel provided in the scene context.',
+  'LIVE OSINT & BREAKING NEWS ("Gibt es aktuelle News?", "Was gibt es Neues?", "Zeig mir OSINT Meldungen", "Was passiert in Charkiw?", "Gibt es neue Drohnenmeldungen?", "Telegram News"): When the user asks for news or OSINT dispatches, use query_osint_news (e.g. {"name": "query_osint_news", "args": {"query": "Charkiw"}, "say": "Frage aktuelle OSINT-Meldungen ab."}) or set_layer_visibility with layerId: "live-osint" and enabled: true to display the live Telegram OSINT layer on the globe.',
+  'FINANCIAL MARKETS & STOCK FORECASTS ("Wie wirken sich die Ereignisse auf die Finanzmärkte aus?", "Was macht der Ölpreis?", "Goldpreis Reaktion", "Finanzmärkte", "Aktienmärkte", "Kausalitätsanalyse", "Marktreaktion", "prognostiziere welche aktien durch die decke gehen", "welche aktien steigen am 10. Oktober", "Aktienprognose", "Top Aktien"): When the user asks for financial impacts, breakout stocks, or which stocks will surge/skyrocket ("durch die decke gehen"), ALWAYS call query_financial_market_impact (e.g. {"name": "query_financial_market_impact", "args": {"query": "ausbruchsaktien 10. Oktober"}, "say": "Erstelle geopolitische Ausbruchsprognose für die stärksten Aktien."}). For a specific individual stock (e.g. "Prognose für Rheinmetall", "wie steht Nvidia", "Aktienkurs Tesla"), call search_and_forecast_asset with query: "<asset name>".',
   'DEICTIC REFERENCES ("diesen Wald", "dieses Gebäude", "dieser Turm", "dorthin", "dahin", "it", "there"): NEVER geocode the demonstrative word itself. Resolve it from the conversation history (the last mentioned place of that kind — "diesen Wald" after "Schwarzwald" means Schwarzwald) and second from the current scene (camera place, selection, nearby landmarks). If neither names a place, answer briefly that you do not know which one is meant.',
   'For map actions, answer with ONLY a JSON object, no other text: {"name": "<tool>", "args": {...}, "say": "<short confirmation in the user language>"}',
   'The JSON envelope MUST use exactly the keys "name", "args", "say" — never "tool", "type", or "params". One tool call per answer; the single best tool wins.',
@@ -586,6 +601,12 @@ export function synthRouterSay(name, args = {}, lang = 'en') {
 
   if (name === 'track_entity') {
     const target = q(a.query);
+    if (/^(?:nearest|nächste|naechste|ein(?:e|en|em|er)?|einen|a|an|any|some)?\s*(?:ander(?:e|en|er|em|es)?|another|others?|different)?\s*(?:satellit(?:e|en|es)?|satelit(?:e|en|es)?|satellite(?:s)?|raumstation|space\s+station)$/i.test(target)) {
+      if (/\b(?:ander|another|others?|different)/i.test(target)) {
+        return de ? 'Wähle einen anderen Satelliten.' : 'Choosing a different satellite.';
+      }
+      return de ? 'Verfolge den nächsten Satelliten.' : 'Tracking the nearest satellite.';
+    }
     if (target) return de ? `Verfolge ${target}.` : `Tracking ${target}.`;
     return de ? 'Verfolge Kontakt.' : 'Tracking contact.';
   }
@@ -605,6 +626,11 @@ export function synthRouterSay(name, args = {}, lang = 'en') {
 
   if (name === 'control_cctv') {
     const where = q(a.cameraQuery) || q(a.locationQuery) || q(a.query) || q(a.location);
+    if (a.action === 'analyze') {
+      return where
+        ? (de ? `Analysiere Kamerabild in ${where}.` : `Analyzing camera view in ${where}.`)
+        : (de ? 'Analysiere aktuelles Kamerabild.' : 'Analyzing current camera view.');
+    }
     if (where) return de ? `Öffne Kameras in ${where}.` : `Opening cameras in ${where}.`;
     if (a.action === 'nearest') return de ? 'Springe zur nächsten Kamera.' : 'Jumping to the nearest camera.';
     if (a.action === 'next') return de ? 'Nächste Kamera.' : 'Next camera.';
@@ -619,12 +645,57 @@ export function synthRouterSay(name, args = {}, lang = 'en') {
     const layer = q(a.layerId);
     const on = a.enabled !== false;
     if (layer === 'cctv') return on ? (de ? 'Kameras ein.' : 'Cameras on.') : (de ? 'Kameras aus.' : 'Cameras off.');
+    if (layer === 'drone-attacks') return on ? (de ? 'Drohnenangriffe ein.' : 'Drone attacks on.') : (de ? 'Drohnenangriffe aus.' : 'Drone attacks off.');
+    if (layer === 'terror-attacks') return on ? (de ? 'Terroranschläge ein.' : 'Terror attacks on.') : (de ? 'Terroranschläge aus.' : 'Terror attacks off.');
+    if (layer === 'missile-strikes') return on ? (de ? 'Raketenangriffe ein.' : 'Missile strikes on.') : (de ? 'Raketenangriffe aus.' : 'Missile strikes off.');
+    if (layer === 'bombardments') return on ? (de ? 'Bombardements ein.' : 'Bombardments on.') : (de ? 'Bombardements aus.' : 'Bombardments off.');
+    if (layer === 'military-convoys') return on ? (de ? 'Militärkonvois ein.' : 'Military convoys on.') : (de ? 'Militärkonvois aus.' : 'Military convoys off.');
+    if (layer === 'missile-tests') return on ? (de ? 'Raketentests ein.' : 'Missile tests on.') : (de ? 'Raketentests aus.' : 'Missile tests off.');
+    if (layer === 'frontlines') return on ? (de ? 'Frontlinien ein.' : 'Frontlines on.') : (de ? 'Frontlines aus.' : 'Frontlines off.');
+    if (layer === 'conflicts') return on ? (de ? 'Konfliktzonen ein.' : 'Conflict zones on.') : (de ? 'Conflict zones aus.' : 'Conflict zones off.');
+    if (layer === 'battles') return on ? (de ? 'Bodenkämpfe ein.' : 'Ground battles on.') : (de ? 'Ground battles aus.' : 'Ground battles off.');
+    if (layer === 'campaign-trails') return on ? (de ? 'Wahlkampfrouten ein.' : 'Campaign trails on.') : (de ? 'Wahlkampfrouten aus.' : 'Campaign trails off.');
+    if (layer === 'secret-service') return on ? (de ? 'Secret Service Schutz ein.' : 'Secret Service security on.') : (de ? 'Secret Service Schutz aus.' : 'Secret Service security off.');
+    if (layer === 'live-osint') return on ? (de ? 'Live OSINT Feed ein.' : 'Live OSINT feed on.') : (de ? 'Live OSINT Feed aus.' : 'Live OSINT feed off.');
     if (layer) return on ? (de ? `Schalte ${layer} ein.` : `Turning ${layer} on.`) : (de ? `Schalte ${layer} aus.` : `Turning ${layer} off.`);
     return on ? (de ? 'Schalte Ebene ein.' : 'Turning layer on.') : (de ? 'Schalte Ebene aus.' : 'Turning layer off.');
   }
 
   if (name === 'zoom_to_globe') {
     return de ? 'Zoome raus zur Globusansicht.' : 'Zooming out to a globe view.';
+  }
+
+  if (name === 'fly_to_nearest_tactical_target') {
+    return de ? 'Fliege zum nächsten Einsatzziel.' : 'Flying to tactical target.';
+  }
+
+  if (name === 'mark_tactical_impact_zone') {
+    return a.zoomIn !== false
+      ? (de ? 'Zoome heran und markiere das betroffene Angriffsgebiet.' : 'Zooming in and marking the affected strike zone.')
+      : (de ? 'Markiere das betroffene Angriffsgebiet.' : 'Marking the affected strike zone.');
+  }
+
+  if (name === 'describe_tactical_event') {
+    return de ? 'Rufe Lagebericht und Aufklärungsdaten ab.' : 'Retrieving tactical situation report.';
+  }
+
+  if (name === 'query_osint_news') {
+    const topic = q(a.query) || q(a.topic) || q(a.location);
+    if (topic) return de ? `Frage aktuelle OSINT-Meldungen zu ${topic} ab.` : `Querying latest OSINT news for ${topic}.`;
+    return de ? 'Frage aktuelle Telegram OSINT-Meldungen ab.' : 'Querying latest Telegram OSINT dispatches.';
+  }
+
+  if (name === 'query_financial_market_impact') {
+    return de
+      ? 'Analysiere Finanzmärkte und geopolitische Auswirkungen.'
+      : 'Analyzing financial markets and geopolitical impact.';
+  }
+
+  if (name === 'search_and_forecast_asset') {
+    const asset = q(a.query) || q(a.asset) || q(a.symbol) || 'Asset';
+    return de
+      ? `Erstelle In-Depth Prognose für ${asset}.`
+      : `Creating in-depth prognosis for ${asset}.`;
   }
 
   if (name === 'adjust_camera_zoom') {
@@ -646,6 +717,9 @@ export function synthRouterSay(name, args = {}, lang = 'en') {
   }
 
   if (name === 'select_nearest_aircraft') {
+    if (a.differentFromSelected === true) {
+      return de ? 'Wähle ein anderes Flugzeug.' : 'Selecting another aircraft.';
+    }
     return de ? 'Wähle das nächste Flugzeug.' : 'Selecting the nearest aircraft.';
   }
 

@@ -470,6 +470,20 @@ export function createAnnotationEngine({
       }
       return { from, to, distanceM: greatCircleM(from, to), source: from.source };
     }
+    if (Array.isArray(spec?.ring) && spec.ring.length >= 3) {
+      const lon = spec.longitude ?? spec.ring[0][0];
+      const lat = spec.latitude ?? spec.ring[0][1];
+      return {
+        lat,
+        lon,
+        height: 0,
+        label: spec.label || spec.target || null,
+        ring: spec.ring,
+        footprintKind: 'area',
+        synthesized: Boolean(spec.synthesized),
+        source: 'explicit-ring',
+      };
+    }
     const wantFootprint = type === 'area' ? spec.footprint !== false : Boolean(spec.footprint);
     return resolveTarget({
       viewer,

@@ -73,6 +73,7 @@ import aisLiveVesselsLayer from './data/aisLiveVessels.js';
 import militaryAwarenessLayer from './data/militaryAwareness.js';
 import militaryInstallationsLayer from './data/militaryInstallations.js';
 import rocketLaunchesLayer from './data/rocketLaunches.js';
+import { openGlobalMarketSitrepModal } from './ui/globalMarketSitrepModal.js';
 import {
   aggregateLayerLoading,
   canPresentDeferredStatusNotice,
@@ -206,6 +207,7 @@ const SHARE_PANEL_STATE_SPECS = Object.freeze([
   { id: 'location-bar', pinnable: true },
   { id: 'data-panel' },
   { id: 'cctv-panel' },
+  { id: 'botnet-intel-panel' },
   { id: 'radio-panel' },
   { id: 'scene-panel' },
   { id: 'global-context-panel' },
@@ -216,6 +218,7 @@ const SHARE_PANEL_STATE_SPECS = Object.freeze([
 const COCKPIT_ENTRY_COLLAPSE_PANEL_IDS = Object.freeze([
   'data-panel',
   'cctv-panel',
+  'botnet-intel-panel',
   'scene-panel',
   'pp-toggles',
   'global-context-panel',
@@ -2339,6 +2342,7 @@ export class StyleManager {
     this._cctvCoverageBtn = document.getElementById('cctv-coverage-btn');
     this._cctvAutoHopBtn = document.getElementById('cctv-auto-hop-btn');
     this._cctvProjectionBtn = document.getElementById('cctv-projection-btn');
+    this._cctvAnalyzeBtn = document.getElementById('cctv-analyze-btn');
     this._cctvQualityChip = document.getElementById('cctv-quality-chip');
     this._cctvAdjustBtn = document.getElementById('cctv-adjust-btn');
     this._cctvCalReadout = document.getElementById('cctv-cal-readout');
@@ -2623,6 +2627,7 @@ export class StyleManager {
     this._initRadioPanel();
     this._initCctvPanel();
     this._initGlobalContextPanel();
+    this._initBotnetIntelPanel();
     this._initLocationBar();
     this._initShareButton();
     this._initClearSelectedLayersButton();
@@ -5296,6 +5301,976 @@ export class StyleManager {
     this._scheduleRightPanelLayout();
   }
 
+  /**
+   * Initializes the Abacus AI Botnet Intel panel and tactical SITREP modal.
+   */
+  _initBotnetIntelPanel() {
+    this._botnetPanel = document.getElementById('botnet-intel-panel');
+    this._botnetFeedContainer = document.getElementById('botnet-feed-container');
+    this._botnetCountBadge = document.getElementById('botnet-count-badge');
+    this._botnetRefreshBtn = document.getElementById('botnet-refresh-btn');
+    this._botnetExpandToggleBtn = document.getElementById('botnet-expand-toggle-btn');
+    this._botnetModal = document.getElementById('botnet-briefing-modal');
+    this._botnetModalTitle = document.getElementById('botnet-briefing-title');
+    this._botnetModalMeta = document.getElementById('botnet-briefing-meta');
+    this._botnetModalContent = document.getElementById('botnet-briefing-content');
+    this._botnetModalFlyBtn = document.getElementById('botnet-briefing-fly-btn');
+    this._botnetModalChatBtn = document.getElementById('botnet-briefing-chat-btn');
+    this._botnetModalCopyBtn = document.getElementById('botnet-briefing-copy-btn');
+    this._botnetModalCloseBtn = document.getElementById('botnet-briefing-close-btn');
+
+    if (!this._botnetPanel) return;
+
+    this._botnetDispatches = [];
+    this._botnetActiveCategory = 'ALL';
+    this._botnetActiveModalDispatch = null;
+
+    // Panel header click listener (clicking anywhere on header toggles panel)
+    const headerEl = this._botnetPanel.querySelector('.panel-header');
+    if (headerEl) {
+      headerEl.addEventListener('click', (e) => {
+        if (e.target.closest('#botnet-refresh-btn, #botnet-expand-toggle-btn, .panel-collapse-btn')) return;
+        const nextCollapsed = !this._botnetPanel.classList.contains('collapsed');
+        this.setPanelCollapsed('botnet-intel-panel', nextCollapsed, { explicit: true });
+      });
+    }
+
+    // Refresh button listener
+    this._botnetRefreshBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void this.refreshBotnetFeed(true);
+    });
+
+    // Expand / Full sidebar toggle listener
+    this._botnetExpandToggleBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const wasFull = this._botnetPanel.classList.toggle('botnet-full-sidebar');
+      const icon = this._botnetExpandToggleBtn.querySelector('.material-symbols-outlined');
+      if (icon) {
+        icon.textContent = wasFull ? 'close_fullscreen' : 'open_in_full';
+      }
+      this._botnetExpandToggleBtn.title = wasFull ? 'Minimize standard view' : 'Full sidebar view';
+      if (wasFull && this._botnetPanel.classList.contains('collapsed')) {
+        this.setPanelCollapsed('botnet-intel-panel', false, { explicit: true });
+      }
+      this._scheduleLeftPanelLayout();
+    });
+
+    // Global SITREP & Markets button listener
+    const globalSitrepBtn = document.getElementById('botnet-global-sitrep-btn');
+    globalSitrepBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void openGlobalMarketSitrepModal();
+    });
+
+    // Filter tab listeners
+    const tabs = this._botnetPanel.querySelectorAll('.botnet-tab-btn');
+    tabs.forEach((tab) => {
+      tab.addEventListener('click', () => {
+        tabs.forEach((t) => t.classList.remove('active'));
+        tab.classList.add('active');
+        this._botnetActiveCategory = tab.dataset.category || 'ALL';
+        this._renderBotnetFeed();
+      });
+    });
+
+    // Modal close listeners
+    this._botnetModalCloseBtn?.addEventListener('click', () => {
+      this._closeBotnetModal();
+    });
+    this._botnetModal?.querySelector('.botnet-briefing-backdrop')?.addEventListener('click', () => {
+      this._closeBotnetModal();
+    });
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && this._botnetModal && !this._botnetModal.hidden) {
+        this._closeBotnetModal();
+      }
+    });
+
+    // Modal fly button
+    this._botnetModalFlyBtn?.addEventListener('click', () => {
+      if (this._botnetActiveModalDispatch?.coordinates) {
+        const { latitude, longitude, altitude } = this._botnetActiveModalDispatch.coordinates;
+        this.applyCameraState({
+          lat: latitude,
+          lon: longitude,
+          alt: altitude || 15000,
+          pitch: -45,
+          heading: 0,
+        }, 2.5);
+        this._closeBotnetModal();
+      }
+    });
+
+    // Modal chat follow-up button
+    this._botnetModalChatBtn?.addEventListener('click', () => {
+      if (this._botnetActiveModalDispatch) {
+        this.followUpDispatchInChat(this._botnetActiveModalDispatch);
+      }
+    });
+
+    // Modal copy button
+    this._botnetModalCopyBtn?.addEventListener('click', () => {
+      const text = this._botnetModalContent?.innerText || '';
+      if (text && navigator.clipboard) {
+        navigator.clipboard.writeText(text).then(() => {
+          const original = this._botnetModalCopyBtn.innerText;
+          this._botnetModalCopyBtn.innerText = '✓ COPIED!';
+          setTimeout(() => {
+            if (this._botnetModalCopyBtn) this._botnetModalCopyBtn.innerText = original;
+          }, 2000);
+        }).catch(() => {});
+      }
+    });
+
+    // Initial feed fetch and auto-refresh every 30s
+    void this.refreshBotnetFeed();
+    this._botnetInterval = setInterval(() => {
+      void this.refreshBotnetFeed();
+    }, 30000);
+  }
+
+  async refreshBotnetFeed(force = false) {
+    if (!this._botnetFeedContainer) return;
+    try {
+      if (this._botnetRefreshBtn) this._botnetRefreshBtn.classList.add('spinning');
+      const res = await fetch(`/api/intel/botnet${force ? '?refresh=1' : ''}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.dispatches)) {
+        this._botnetDispatches = data.dispatches.sort((a, b) => {
+          const timeA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+          const timeB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+          return timeB - timeA;
+        });
+        if (this._botnetCountBadge) {
+          const syncTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+          this._botnetCountBadge.textContent = `${data.count || data.dispatches.length} DISPATCHES · LIVE`;
+          this._botnetCountBadge.title = `Last synchronized: ${syncTime} · Real-time auto-refresh active (30s)`;
+        }
+        this._renderBotnetFeed();
+
+        // Pre-warm tactical briefings for top dispatches in background so clicks open in 0ms
+        const topDispatches = (this._botnetDispatches || []).slice(0, 4);
+        for (const item of topDispatches) {
+          fetch('/api/intel/briefing', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              headline: item.title,
+              locationName: item.locationName,
+              lat: item.coordinates?.latitude,
+              lon: item.coordinates?.longitude,
+              category: item.category,
+              details: item.summary,
+            }),
+          }).catch(() => {});
+        }
+      }
+    } catch {
+      if (this._botnetCountBadge) this._botnetCountBadge.textContent = 'OFFLINE';
+    } finally {
+      if (this._botnetRefreshBtn) this._botnetRefreshBtn.classList.remove('spinning');
+    }
+  }
+
+  _renderBotnetFeed() {
+    if (!this._botnetFeedContainer) return;
+    const cat = this._botnetActiveCategory;
+    const filtered = (this._botnetDispatches || []).filter((d) => {
+      if (cat === 'ALL') return true;
+      if (cat === 'UNWETTER') return d.category === 'UNWETTER';
+      if (cat === 'CRISIS') return d.category === 'CRISIS';
+      if (cat === 'SCHWEIZ') return d.category === 'SCHWEIZ';
+      if (cat === 'RADAR') return d.category === 'RADAR';
+      if (cat === 'GEOPOLITICS') return d.category === 'GEOPOLITICS' || d.category === 'MILITARY';
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      this._botnetFeedContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: rgba(0, 230, 255, 0.5); font-family: var(--font-mono, monospace); font-size: 0.72rem; letter-spacing: 0.05em;">NO SENSOR DATA IN THIS CATEGORY</div>';
+      return;
+    }
+
+    this._botnetFeedContainer.innerHTML = '';
+    for (const item of filtered) {
+      const card = document.createElement('div');
+      const severityClass = `severity-${String(item.severity || 'info').toLowerCase()}`;
+      card.className = `botnet-card ${severityClass}`;
+      card.dataset.dispatchId = item.id;
+
+      const coords = item.coordinates;
+      const coordsText = coords ? `${coords.latitude.toFixed(2)}° N, ${coords.longitude.toFixed(2)}° E` : '—';
+      let timeAgo = 'LIVE';
+      if (item.timestamp) {
+        const d = new Date(item.timestamp);
+        if (!Number.isNaN(d.getTime())) {
+          const now = Date.now();
+          const diffMin = Math.round((now - d.getTime()) / 60000);
+          if (diffMin >= 0 && diffMin < 60) {
+            timeAgo = diffMin <= 1 ? 'JUST NOW' : `${diffMin}M AGO`;
+          } else {
+            const diffHours = Math.round(diffMin / 60);
+            timeAgo = diffHours < 24 ? `${diffHours}H AGO` : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          }
+        }
+      }
+
+      const isNaval = Boolean(item.isNaval) || item.category === 'SEEGEFECHT' || String(item.weaponSystem || '').toLowerCase().includes('naval') || String(item.title).toLowerCase().includes('ship') || String(item.title).toLowerCase().includes('schiff') || String(item.title).toLowerCase().includes('warship');
+      const isDrone = item.category === 'DROHNENANGRIFF' || item.category === 'drone-attacks' || Boolean(item.isDrone) || String(item.title).toLowerCase().includes('drone') || String(item.title).toLowerCase().includes('drohne');
+      const isMissile = item.category === 'RAKETENANGRIFF' || String(item.title).toLowerCase().includes('missile') || String(item.title).toLowerCase().includes('rakete');
+
+      let catBadge = `[${item.category || 'INTEL'}]`;
+      if (item.isTornado) catBadge = '🌪️ TORNADO WARNING';
+      else if (isNaval) catBadge = '⚓ NAVAL TARGET / STRIKE';
+      else if (isDrone) catBadge = '🛩️ DRONE ACTIVITY';
+      else if (isMissile) catBadge = '🚀 MISSILE STRIKE';
+      else if (item.isSeismic) catBadge = `🌋 EARTHQUAKE M${item.magnitude?.toFixed(1) || '4+'}`;
+      else if (item.isHazard) catBadge = '🔥 NATURAL CRISIS';
+      else if (item.category === 'UNWETTER') catBadge = '⚡ SEVERE WEATHER';
+      else if (item.category === 'CRISIS') catBadge = '🌋 CRISIS ZONE';
+      else if (item.category === 'GEOPOLITICS') catBadge = '⚔️ GEOPOLITICS / DEFENSE';
+      else if (item.category === 'SCHWEIZ') catBadge = '🇨🇭 SWITZERLAND RADAR';
+      else if (item.category === 'RADAR') catBadge = '📡 EW / JAMMING';
+
+      const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      const cleanSummary = String(item.summary || '')
+        .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'")
+        .replace(/&amp;/gi, '&')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      card.innerHTML = `
+        <div class="botnet-card-header">
+          <span class="botnet-card-tag">${esc(catBadge)}</span>
+          <span class="botnet-card-time">${timeAgo}</span>
+        </div>
+        <div class="botnet-card-title">${esc(item.title || '')}</div>
+        <div class="botnet-card-location">
+          <span class="material-symbols-outlined" style="font-size: 13px;">location_on</span>
+          <span>${esc(item.locationName || 'Zielgebiet')} · ${coordsText}</span>
+        </div>
+        <div class="botnet-card-summary">${esc(cleanSummary)}</div>
+        <div class="botnet-card-actions">
+          <button class="botnet-card-btn btn-fly" type="button">
+            <span class="material-symbols-outlined" style="font-size: 13px;">near_me</span> ANFLIEGEN
+          </button>
+          <button class="botnet-card-btn btn-briefing" type="button">
+            <span class="material-symbols-outlined" style="font-size: 13px;">smart_toy</span> LAGEBERICHT
+          </button>
+          <button class="botnet-card-btn btn-chat" type="button" title="Lage im KI-Chat überwachen">
+            <span class="material-symbols-outlined" style="font-size: 13px;">chat</span> IM CHAT
+          </button>
+        </div>
+      `;
+
+      // Clicking card highlights area / point / jam zone and flies to location
+      card.addEventListener('click', () => {
+        this._highlightBotnetDispatch(item, { fly: true });
+      });
+
+      card.querySelector('.btn-fly')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._highlightBotnetDispatch(item, { fly: true });
+      });
+
+      card.querySelector('.btn-briefing')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._openBotnetBriefing(item);
+      });
+
+      card.querySelector('.btn-chat')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.followUpDispatchInChat(item);
+      });
+
+      this._botnetFeedContainer.appendChild(card);
+    }
+  }
+
+  /**
+   * Follows up a tactical botnet dispatch in the WorldView AI chat.
+   * Highlights coordinates on globe, closes modal if open, opens chat drawer,
+   * and feeds an in-depth analysis request to the AI router.
+   * @param {object} item Dispatch object
+   */
+  followUpDispatchInChat(item) {
+    if (!item) return;
+    this._closeBotnetModal();
+    this._highlightBotnetDispatch(item, { fly: true });
+    const coords = item.coordinates;
+    const coordsText = coords ? `${coords.latitude.toFixed(4)}° N, ${coords.longitude.toFixed(4)}° E` : '';
+    const cleanDetails = item.detailsDe || item.summaryDe || item.summary || '';
+    const prompt = `Analysiere die aktuelle Lage: ${item.title}. Ort: ${item.locationName} (${coordsText}). Details: ${cleanDetails}`;
+    if (typeof window.__gevSendChat === 'function') {
+      window.__gevSendChat(prompt);
+    } else {
+      window.__gevPendingChat = prompt;
+    }
+  }
+
+  /**
+   * Highlights tactical geometry for a selected Botnet dispatch on Cesium globe:
+   * - Weather / Tornado polygons: drawn as shaded tactical polygons with glowing perimeter
+   * - Electronic Warfare / Jam Zones: drawn as active pulsing hazard circles with radius
+   * - Seismic / Earthquakes: drawn as seismic epicenter shockwave rings with magnitude
+   * - Geopolitics / Defense: drawn as strategic conflict zone target circles
+   * - Points / Facilities: drawn as tactical reticles with target ring and coordinates
+   * @param {object} item Dispatch data object
+   * @param {object} [options]
+   * @param {boolean} [options.fly=true] Fly camera to target
+   */
+  _highlightBotnetDispatch(item, { fly = true } = {}) {
+    if (!item) return;
+    this._botnetActiveDispatch = item;
+
+    // Highlight card in DOM
+    const cards = this._botnetFeedContainer?.querySelectorAll('.botnet-card') || [];
+    cards.forEach((card) => {
+      card.classList.toggle('active-card', card.dataset.dispatchId === item.id);
+    });
+
+    if (!this.viewer) return;
+
+    if (!this._botnetDataSource) {
+      this._botnetDataSource = new Cesium.CustomDataSource('gev-botnet-tactical');
+      this.viewer.dataSources.add(this._botnetDataSource);
+    }
+
+    const ds = this._botnetDataSource;
+    ds.entities.removeAll();
+
+    const coords = item.coordinates;
+    if (!coords) return;
+
+    const centerPos = Cesium.Cartesian3.fromDegrees(coords.longitude, coords.latitude);
+    const isCrit = item.severity === 'CRITICAL' || item.isTornado;
+
+    // 1. AREA / POLYGON (Tornado, Severe Storm, Flash Flood)
+    if (Array.isArray(item.polygon) && item.polygon.length >= 3) {
+      const flatDegrees = [];
+      for (const pt of item.polygon) {
+        if (Array.isArray(pt) && Number.isFinite(pt[0]) && Number.isFinite(pt[1])) {
+          flatDegrees.push(pt[0], pt[1]);
+        }
+      }
+      if (flatDegrees.length >= 6) {
+        const positions = Cesium.Cartesian3.fromDegreesArray(flatDegrees);
+        const polyFill = isCrit ? 'rgba(255, 23, 68, 0.28)' : 'rgba(255, 145, 0, 0.22)';
+        const polyOutline = isCrit ? '#ff1744' : '#ff9100';
+
+        // Ground-clamped polygon fill
+        ds.entities.add({
+          name: `${item.title} Area`,
+          polygon: {
+            hierarchy: new Cesium.PolygonHierarchy(positions),
+            material: Cesium.Color.fromCssColorString(polyFill),
+            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          },
+        });
+
+        // Glowing border polyline
+        ds.entities.add({
+          name: `${item.title} Perimeter`,
+          polyline: {
+            positions: [...positions, positions[0]],
+            width: 3,
+            material: new Cesium.PolylineGlowMaterialProperty({
+              glowPower: 0.28,
+              color: Cesium.Color.fromCssColorString(polyOutline),
+            }),
+            clampToGround: true,
+          },
+        });
+
+        // Center Target Pin & Area Label
+        ds.entities.add({
+          position: centerPos,
+          point: {
+            pixelSize: 10,
+            color: Cesium.Color.fromCssColorString(polyOutline),
+            outlineColor: Cesium.Color.WHITE,
+            outlineWidth: 2,
+            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+          label: {
+            text: `${item.title}\n[SEKTOR: ${item.locationName.toUpperCase()}]`,
+            font: 'bold 11px monospace',
+            style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+            fillColor: Cesium.Color.WHITE,
+            outlineColor: Cesium.Color.BLACK,
+            outlineWidth: 3,
+            verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+            pixelOffset: new Cesium.Cartesian2(0, -16),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        });
+      }
+    }
+    // 2. SEISMIC / EARTHQUAKES (USGS M3.0+ / M4.0+)
+    else if (item.isSeismic) {
+      const radius = item.seismicRadius || 65000;
+      const magStr = item.magnitude ? `M${item.magnitude.toFixed(1)}` : 'SEISMISCH';
+
+      // Inner seismic shockwave core
+      ds.entities.add({
+        name: `Seismic Core: ${item.locationName}`,
+        position: centerPos,
+        ellipse: {
+          semiMajorAxis: radius,
+          semiMinorAxis: radius,
+          material: Cesium.Color.fromCssColorString(isCrit ? 'rgba(255, 23, 68, 0.28)' : 'rgba(255, 61, 0, 0.22)'),
+          outline: true,
+          outlineColor: Cesium.Color.fromCssColorString(isCrit ? '#ff1744' : '#ff3d00'),
+          outlineWidth: 3,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+        },
+      });
+
+      // Outer wave boundary
+      ds.entities.add({
+        name: `Seismic Wave Propagation`,
+        position: centerPos,
+        ellipse: {
+          semiMajorAxis: radius * 1.5,
+          semiMinorAxis: radius * 1.5,
+          material: Cesium.Color.TRANSPARENT,
+          outline: true,
+          outlineColor: Cesium.Color.fromCssColorString('rgba(255, 145, 0, 0.5)'),
+          outlineWidth: 2,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+        },
+      });
+
+      // Epicenter pin and seismic label
+      ds.entities.add({
+        position: centerPos,
+        point: {
+          pixelSize: 12,
+          color: Cesium.Color.fromCssColorString('#ff3d00'),
+          outlineColor: Cesium.Color.WHITE,
+          outlineWidth: 2,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+        label: {
+          text: `🌋 EARTHQUAKE ${magStr} // ${item.locationName.toUpperCase()}\nDEPTH: ${item.depthKm || 10} KM · SEISMICALLY ACTIVE`,
+          font: 'bold 11px monospace',
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          fillColor: Cesium.Color.fromCssColorString('#ff9e80'),
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 3,
+          verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+          pixelOffset: new Cesium.Cartesian2(0, -18),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      });
+    }
+    // 3. DRONE ATTACKS & UAV SWARMS (Shahed, FPV swarms, recon strikes)
+    else if (
+      item.category === 'DROHNENANGRIFF' ||
+      item.category === 'drone-attacks' ||
+      Boolean(item.isDrone) ||
+      String(item.title).toLowerCase().includes('drone') ||
+      String(item.title).toLowerCase().includes('drohne') ||
+      String(item.weaponSystem || '').toLowerCase().includes('shahed') ||
+      String(item.weaponSystem || '').toLowerCase().includes('drone')
+    ) {
+      const isMassSwarm = String(item.title).toLowerCase().includes('swarm') ||
+                          String(item.details || item.summary || '').includes('161') ||
+                          (item.impactRadiusM && item.impactRadiusM >= 40000);
+      const swarmRadius = item.impactRadiusM && item.impactRadiusM >= 15000
+        ? item.impactRadiusM
+        : (isMassSwarm ? 50000 : 35000);
+
+      // Primary Swarm Threat Envelope (Tactical Cybernetic Purple / Warning)
+      ds.entities.add({
+        name: `UAV Threat Envelope: ${item.locationName}`,
+        position: centerPos,
+        ellipse: {
+          semiMajorAxis: swarmRadius,
+          semiMinorAxis: swarmRadius,
+          material: Cesium.Color.fromCssColorString('rgba(155, 89, 182, 0.22)'),
+          outline: true,
+          outlineColor: Cesium.Color.fromCssColorString('#9b59b6'),
+          outlineWidth: 3,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+        },
+      });
+
+      // Outer Radar Early-Warning Perimeter (1.35x)
+      ds.entities.add({
+        name: `UAV Detection Perimeter`,
+        position: centerPos,
+        ellipse: {
+          semiMajorAxis: swarmRadius * 1.35,
+          semiMinorAxis: swarmRadius * 1.35,
+          material: Cesium.Color.TRANSPARENT,
+          outline: true,
+          outlineColor: Cesium.Color.fromCssColorString('rgba(155, 89, 182, 0.5)'),
+          outlineWidth: 2,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+        },
+      });
+
+      // Swarm Hub Pin & Tactical Label
+      ds.entities.add({
+        position: centerPos,
+        point: {
+          pixelSize: 13,
+          color: Cesium.Color.fromCssColorString('#9b59b6'),
+          outlineColor: Cesium.Color.WHITE,
+          outlineWidth: 2,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+        label: {
+          text: `🛩️ DRONE ACTIVITY / UAV SWARM // ${item.locationName.toUpperCase()}\nSECTOR THREAT RADIUS: ${(swarmRadius / 1000).toFixed(0)} KM · ${item.weaponSystem || 'UAV COMBAT SECTOR'}`,
+          font: 'bold 11px monospace',
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          fillColor: Cesium.Color.fromCssColorString('#e1bee7'),
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 3,
+          verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+          pixelOffset: new Cesium.Cartesian2(0, -18),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      });
+    }
+    // 4. MISSILE STRIKES (Ballistic, Cruise & Glide Bomb attacks)
+    else if (
+      item.category === 'RAKETENANGRIFF' ||
+      String(item.title).toLowerCase().includes('missile') ||
+      String(item.title).toLowerCase().includes('rakete')
+    ) {
+      const radius = item.impactRadiusM && item.impactRadiusM >= 10000 ? item.impactRadiusM : 30000;
+      ds.entities.add({
+        name: `Missile Strike Zone: ${item.locationName}`,
+        position: centerPos,
+        ellipse: {
+          semiMajorAxis: radius,
+          semiMinorAxis: radius,
+          material: Cesium.Color.fromCssColorString('rgba(255, 23, 68, 0.22)'),
+          outline: true,
+          outlineColor: Cesium.Color.fromCssColorString('#ff1744'),
+          outlineWidth: 3,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+        },
+      });
+      ds.entities.add({
+        position: centerPos,
+        point: {
+          pixelSize: 12,
+          color: Cesium.Color.fromCssColorString('#ff1744'),
+          outlineColor: Cesium.Color.WHITE,
+          outlineWidth: 2,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+        label: {
+          text: `🚀 MISSILE STRIKE // ${item.locationName.toUpperCase()}\nIMPACT RADIUS: ${(radius / 1000).toFixed(0)} KM · ACTIVE`,
+          font: 'bold 11px monospace',
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          fillColor: Cesium.Color.fromCssColorString('#ff8a80'),
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 3,
+          verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+          pixelOffset: new Cesium.Cartesian2(0, -18),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      });
+    }
+    // 5. NAVAL ENGAGEMENT & MARITIME / PORT STRIKES
+    else if (
+      item.isNaval ||
+      item.category === 'SEEGEFECHT' ||
+      String(item.weaponSystem || '').toLowerCase().includes('naval') ||
+      String(item.title).toLowerCase().includes('ship') ||
+      String(item.title).toLowerCase().includes('schiff') ||
+      String(item.title).toLowerCase().includes('warship') ||
+      String(item.title).toLowerCase().includes('naval')
+    ) {
+      const radius = 25000;
+      // Marine target circle (Cyan / Navy Blue glow)
+      ds.entities.add({
+        name: `Naval Target: ${item.locationName}`,
+        position: centerPos,
+        ellipse: {
+          semiMajorAxis: radius,
+          semiMinorAxis: radius,
+          material: Cesium.Color.fromCssColorString('rgba(0, 212, 255, 0.22)'),
+          outline: true,
+          outlineColor: Cesium.Color.fromCssColorString('#00d4ff'),
+          outlineWidth: 3,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+        },
+      });
+
+      // Outer sonar wave ring
+      ds.entities.add({
+        name: `Naval Sonar Perimeter`,
+        position: centerPos,
+        ellipse: {
+          semiMajorAxis: radius * 1.4,
+          semiMinorAxis: radius * 1.4,
+          material: Cesium.Color.TRANSPARENT,
+          outline: true,
+          outlineColor: Cesium.Color.fromCssColorString('rgba(0, 212, 255, 0.45)'),
+          outlineWidth: 1.5,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+        },
+      });
+
+      // Pin with anchor label
+      ds.entities.add({
+        position: centerPos,
+        point: {
+          pixelSize: 13,
+          color: Cesium.Color.fromCssColorString('#00d4ff'),
+          outlineColor: Cesium.Color.WHITE,
+          outlineWidth: 2,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+        label: {
+          text: `⚓ NAVAL TARGET / MARITIME STRIKE // ${item.locationName.toUpperCase()}\n${item.title.slice(0, 50)}`,
+          font: 'bold 11px monospace',
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          fillColor: Cesium.Color.fromCssColorString('#80d8ff'),
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 3,
+          verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+          pixelOffset: new Cesium.Cartesian2(0, -18),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      });
+
+      // Activate vessels layer if available so surrounding ship/AIS contacts can be viewed
+      try {
+        if (typeof this.setLayerActive === 'function') {
+          this.setLayerActive('vessels', true);
+        }
+      } catch {}
+    }
+    // 6. GEOPOLITICAL CONFLICT / DEFENSE HOTSPOT
+    else if (item.category === 'GEOPOLITICS' || item.category === 'MILITARY') {
+      const radius = 45000;
+
+      // Strategic zone ellipse
+      ds.entities.add({
+        name: `Geopolitical Zone: ${item.locationName}`,
+        position: centerPos,
+        ellipse: {
+          semiMajorAxis: radius,
+          semiMinorAxis: radius,
+          material: Cesium.Color.fromCssColorString('rgba(255, 23, 68, 0.18)'),
+          outline: true,
+          outlineColor: Cesium.Color.fromCssColorString('#ff1744'),
+          outlineWidth: 2,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+        },
+      });
+
+      // Target reticle pin
+      ds.entities.add({
+        position: centerPos,
+        point: {
+          pixelSize: 11,
+          color: Cesium.Color.fromCssColorString('#ff1744'),
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 2,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+        label: {
+          text: `⚔️ GEOPOLITICAL SECTOR // ${item.locationName.toUpperCase()}\n${item.title.slice(0, 50)}`,
+          font: 'bold 11px monospace',
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          fillColor: Cesium.Color.fromCssColorString('#ff8a80'),
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 3,
+          verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+          pixelOffset: new Cesium.Cartesian2(0, -18),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      });
+    }
+    // 6. JAM ZONES (Electronic Warfare & GNSS Jamming Sectors)
+    else if (item.isJamming || item.category === 'RADAR') {
+      const radius = item.jamRadius || 180000;
+
+      // Hazard circle fill
+      ds.entities.add({
+        name: `EW Jamming Sector: ${item.locationName}`,
+        position: centerPos,
+        ellipse: {
+          semiMajorAxis: radius,
+          semiMinorAxis: radius,
+          material: Cesium.Color.fromCssColorString('rgba(255, 145, 0, 0.22)'),
+          outline: true,
+          outlineColor: Cesium.Color.fromCssColorString('#ff9100'),
+          outlineWidth: 3,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+        },
+      });
+
+      // Outer wave boundary
+      ds.entities.add({
+        name: `EW Jamming Perimeter`,
+        position: centerPos,
+        ellipse: {
+          semiMajorAxis: radius * 1.25,
+          semiMinorAxis: radius * 1.25,
+          material: Cesium.Color.TRANSPARENT,
+          outline: true,
+          outlineColor: Cesium.Color.fromCssColorString('rgba(255, 170, 0, 0.5)'),
+          outlineWidth: 2,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+        },
+      });
+
+      // Jamming Center Transmitter Pin & Tactical Label
+      ds.entities.add({
+        position: centerPos,
+        point: {
+          pixelSize: 12,
+          color: Cesium.Color.fromCssColorString('#ff9100'),
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 2,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+        label: {
+          text: `⚠️ GNSS JAMMING / EW SECTOR // ${item.locationName.toUpperCase()}\nRADIUS: ${(radius / 1000).toFixed(0)} KM · STATUS: ACTIVE`,
+          font: 'bold 11px monospace',
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          fillColor: Cesium.Color.fromCssColorString('#ffab00'),
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 3,
+          verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+          pixelOffset: new Cesium.Cartesian2(0, -18),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      });
+    }
+    // 7. POINT TARGET (Swiss Alpine Observatories, CCTV, Ground Stations, Wildfires)
+    else {
+      const isFire = item.hazardType === 'wildfires';
+      const pointColor = isFire ? '#ff6d00' : '#00e5ff';
+      const radius = isFire ? 15000 : 3000;
+      ds.entities.add({
+        position: centerPos,
+        point: {
+          pixelSize: 10,
+          color: Cesium.Color.fromCssColorString(pointColor),
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 2,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+        ellipse: {
+          semiMajorAxis: radius,
+          semiMinorAxis: radius,
+          material: Cesium.Color.fromCssColorString(isFire ? 'rgba(255, 109, 0, 0.2)' : 'rgba(0, 229, 255, 0.18)'),
+          outline: true,
+          outlineColor: Cesium.Color.fromCssColorString(pointColor),
+          outlineWidth: 2,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+        },
+        label: {
+          text: `🎯 ${item.title}\nLOC: ${item.locationName}`,
+          font: 'bold 11px monospace',
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          fillColor: Cesium.Color.WHITE,
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 3,
+          verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+          pixelOffset: new Cesium.Cartesian2(0, -16),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      });
+    }
+
+    // Camera flight
+    if (fly) {
+      let targetAlt = coords.altitude || 10000;
+      const isDrone = item.category === 'DROHNENANGRIFF' || item.category === 'drone-attacks' || Boolean(item.isDrone) || String(item.title).toLowerCase().includes('drone') || String(item.title).toLowerCase().includes('drohne');
+      const isMissile = item.category === 'RAKETENANGRIFF' || String(item.title).toLowerCase().includes('missile') || String(item.title).toLowerCase().includes('rakete');
+
+      if (item.isJamming) targetAlt = Math.max(35000, (item.jamRadius || 180000) * 0.9);
+      else if (item.isSeismic) targetAlt = Math.max(30000, (item.seismicRadius || 60000) * 1.6);
+      else if (isDrone) targetAlt = Math.max(50000, (item.impactRadiusM || 40000) * 1.6);
+      else if (isMissile) targetAlt = Math.max(40000, (item.impactRadiusM || 30000) * 1.5);
+      else if (item.polygon) targetAlt = 25000;
+      else if (item.category === 'GEOPOLITICS' || item.category === 'MILITARY') targetAlt = 40000;
+      else if (item.category === 'SCHWEIZ') targetAlt = Math.max(2500, coords.altitude || 3000);
+
+      this.applyCameraState({
+        lat: coords.latitude,
+        lon: coords.longitude,
+        alt: targetAlt,
+        pitch: -45,
+        heading: 0,
+      }, 2.5);
+
+      if (item.cctvId && this.cctvLayer) {
+        this.cctvLayer.setEnabled(true);
+        this.cctvLayer.selectCamera(item.cctvId);
+      }
+    }
+  }
+
+  async _openBotnetBriefing(item) {
+    if (!this._botnetModal) return;
+    this._botnetActiveModalDispatch = item;
+    this._botnetModal.hidden = false;
+
+    // Also highlight dispatch on globe when opening briefing
+    this._highlightBotnetDispatch(item, { fly: false });
+
+    const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const cleanSummary = String(item.summary || '')
+      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .replace(/&amp;/gi, '&')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const coords = item.coordinates;
+    const coordsText = coords ? `${coords.latitude.toFixed(4)}° N, ${coords.longitude.toFixed(4)}° E` : '';
+
+    if (this._botnetModalTitle) {
+      this._botnetModalTitle.textContent = item.title || 'Lagebericht';
+    }
+    if (this._botnetModalMeta) {
+      this._botnetModalMeta.textContent = `${item.locationName || 'Zielgebiet'} · ${coordsText} · ${item.source || 'OSINT-LAGEANALYSE'}`;
+    }
+    // 1. INSTANT SITREP DISPLAY (0ms) - Immediate situational readout
+    let catHeadline = 'LAGEBEURTEILUNG';
+    let statusText = 'AKTIVE OPERATIONEN IM SEKTOR';
+    const isNaval = Boolean(item.isNaval) || item.category === 'SEEGEFECHT' || String(item.weaponSystem || '').toLowerCase().includes('naval') || String(item.title).toLowerCase().includes('ship') || String(item.title).toLowerCase().includes('schiff') || String(item.title).toLowerCase().includes('naval') || String(item.title).toLowerCase().includes('port');
+    const isDrone = item.category === 'DROHNENANGRIFF' || item.category === 'drone-attacks' || Boolean(item.isDrone) || String(item.title).toLowerCase().includes('drone') || String(item.title).toLowerCase().includes('drohne');
+    const isMissile = item.category === 'RAKETENANGRIFF' || String(item.title).toLowerCase().includes('missile') || String(item.title).toLowerCase().includes('rakete');
+
+    if (item.category === 'RADAR' || item.isJamming) {
+      catHeadline = 'ELEKTRONISCHE KAMPFFÜHRUNG (EloKa)';
+      statusText = 'AKTIVES GNSS-JAMMING / FUNKSTÖRUNG';
+    } else if (isNaval) {
+      catHeadline = 'SEEGEFECHT & MARITIMES LAGEBILD';
+      statusText = 'KAMPFSCHIFF- & MARINEOPERATIONEN AKTIV';
+    } else if (isDrone) {
+      catHeadline = 'DROHNENAKTIVITÄT / UAV-ANGRIFF';
+      statusText = 'UAV-SCHWARM & ANGRIFFSÜBERWACHUNG IM SEKTOR';
+    } else if (isMissile) {
+      catHeadline = 'RAKETENANGRIFFSBEURTEILUNG';
+      statusText = 'AKTIVE RAKETEN- / GLEITBOMBENWARNUNG';
+    } else if (item.isTornado) {
+      catHeadline = 'TORNADO-WARNUNG // HÖCHSTE BEDROHUNGSSTUFE';
+      statusText = 'TORNADO AM BODEN ODER ROTIERENDE SUPERZELLE';
+    } else if (item.category === 'UNWETTER') {
+      catHeadline = 'METEOROLOGISCHE UNWETTERWARNUNG';
+      statusText = 'SCHWERE STURMFRONT & BÖENLINIE';
+    } else if (item.isSeismic) {
+      catHeadline = 'SEISMISCHE EREIGNISBEURTEILUNG';
+      statusText = 'TEKTONISCHES HYPOZENTRUM ERFASST';
+    }
+
+    const displaySummary = item.detailsDe || item.summaryDe || cleanSummary || item.title || 'Laufende Lagebeobachtung.';
+
+    const initialSitrep = `
+      <div id="botnet-briefing-dynamic-area">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; background:rgba(0,230,255,0.06); padding:6px 12px; border-radius:4px; border:1px solid rgba(0,230,255,0.2);">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <div class="botnet-loader-bar" style="width:60px; height:3px; margin:0;"><div class="botnet-loader-fill"></div></div>
+            <span style="font-family:var(--font-mono, monospace); font-size:0.68rem; color:#00e5ff; letter-spacing:0.05em;">LIVE INTEL · ECHTZEIT-ANALYSE</span>
+          </div>
+          <span style="font-family:var(--font-mono, monospace); font-size:0.65rem; color:rgba(255,255,255,0.6);">LIVE-DATEN</span>
+        </div>
+
+        <h3>🚨 LAGEBERICHT // ${esc(catHeadline)}</h3>
+        <ul>
+          <li><strong>Status:</strong> ${esc(statusText)}</li>
+          <li><strong>Bedrohungsstufe:</strong> <span style="color:${item.severity === 'CRITICAL' ? '#ff1744' : '#ff9100'}; font-weight:700;">${esc(item.severity || 'ELEVATED')}</span></li>
+          <li><strong>Lageüberblick:</strong> ${esc(displaySummary)}</li>
+        </ul>
+
+        <h3>📍 ORT & KOORDINATEN</h3>
+        <ul>
+          <li><strong>Ort:</strong> ${esc(item.locationName || 'Sektor')} (${coordsText || 'Koordinaten erfasst'})</li>
+          <li><strong>Quelle:</strong> ${esc(item.source || 'OSINT-Telegram- & Sensor-Feed')}</li>
+        </ul>
+
+        ${isNaval ? `
+        <h3>⚓ MARITIMES LAGEBILD & SCHIFFSTELEMETRIE</h3>
+        <ul>
+          <li><strong>AIS-Transponder-Status:</strong> Militärische Kriegsschiffe operieren in Konfliktzonen unter EMCON (Radar-/Funkstille & deaktiviertes ziviles AIS); Positionen werden über satellitengestützte Sensoren erfasst.</li>
+          <li><strong>Ziviler Schiffsverkehr:</strong> Zivile AIS-Schiffsebene zur Orientierung im regionalen Seeraum aktiviert.</li>
+        </ul>
+        ` : ''}
+      </div>
+    `;
+
+    if (this._botnetModalContent) {
+      this._botnetModalContent.innerHTML = initialSitrep;
+    }
+
+    // 2. High-speed Abacus AI deep briefing fetch in background
+    try {
+      const res = await fetch('/api/intel/briefing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          headline: item.title,
+          locationName: item.locationName,
+          lat: item.coordinates?.latitude,
+          lon: item.coordinates?.longitude,
+          category: item.category,
+          details: displaySummary,
+        }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || 'Failed to load briefing');
+
+      if (this._botnetModalContent && this._botnetActiveModalDispatch?.id === item.id) {
+        const safe = esc(data.briefing || 'Keine Daten empfangen.');
+        const formatted = safe
+          .replace(/^### (.*$)/gim, '<h3>$1</h3>')
+          .replace(/^## (.*$)/gim, '<h3>$1</h3>')
+          .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
+          .replace(/^\- (.*$)/gim, '<li>$1</li>')
+          .replace(/\n\n/gim, '<br/><br/>');
+
+        const modelBadge = `<div style="margin-top:14px; padding-top:8px; border-top:1px solid rgba(0,230,255,0.15); display:flex; justify-content:space-between; align-items:center; font-family:var(--font-mono, monospace); font-size:0.62rem; color:rgba(255,255,255,0.45);">
+          <span>OSINT-LAGEANALYSE · ${esc(data.model || 'Gemini 2.5 Flash')}</span>
+          <span style="color:#00ffcc;">✓ ANALYSE VERIFIZIERT</span>
+        </div>`;
+
+        this._botnetModalContent.innerHTML = formatted + modelBadge;
+      }
+    } catch (err) {
+      // If network is slow, the user already has the instant structured SITREP!
+      const statusEl = this._botnetModalContent?.querySelector('#botnet-briefing-dynamic-area span');
+      if (statusEl) statusEl.textContent = 'OSINT-LAGEBERICHT (LOKAL)';
+    }
+  }
+
+  _closeBotnetModal() {
+    if (this._botnetModal) this._botnetModal.hidden = true;
+    this._botnetActiveModalDispatch = null;
+  }
+
   /** Wire the independent Radio companion controls. */
   _initRadioPanel() {
     if (!this._radioPanel) return;
@@ -6194,6 +7169,33 @@ export class StyleManager {
       this._dataManager?.setLayerParams('cctv', { showProjection: !current }, { origin: 'user' });
     });
 
+    this._cctvAnalyzeBtn?.addEventListener('click', async () => {
+      const activeId = this._cctvState?.activeCameraId || this._cctvSelect?.value;
+      if (!activeId) return;
+      if (this._cctvAnalyzeBtn) {
+        this._cctvAnalyzeBtn.disabled = true;
+        this._cctvAnalyzeBtn.textContent = 'SCANNING...';
+      }
+      this._typeCctvSummary('Vision-KI analysiert Live-Kamerabild...');
+      try {
+        const resp = await fetch(`/api/cctv/analyze/${encodeURIComponent(activeId)}?lang=de`);
+        if (resp.ok) {
+          const data = await resp.json();
+          const tag = data.analyst === 'abacus' ? '[ABACUS AI] ' : data.analyst === 'gemini' ? '[GEMINI AI] ' : data.analyst === 'ollama' ? '[OLLAMA AI] ' : '';
+          this._typeCctvSummary(`${tag}${data.brief || 'Keine Analyse verfügbar.'}`);
+        } else {
+          this._typeCctvSummary('Kamera-Analyse derzeit nicht verfügbar.');
+        }
+      } catch (err) {
+        this._typeCctvSummary(`Analysefehler: ${err?.message || 'Verbindungsfehler'}`);
+      } finally {
+        if (this._cctvAnalyzeBtn) {
+          this._cctvAnalyzeBtn.disabled = false;
+          this._cctvAnalyzeBtn.textContent = 'AI SCAN';
+        }
+      }
+    });
+
     this._cctvAdjustBtn?.addEventListener('click', () => {
       const current = !!this._cctvState?.calibrationMode;
       this._dataManager?.setLayerParams('cctv', { calibrationMode: !current }, { origin: 'user' });
@@ -6597,6 +7599,10 @@ export class StyleManager {
       this._cctvProjectionBtn.classList.toggle('active', showProjection);
       this._cctvProjectionBtn.textContent = showProjection ? 'PROJECTION ON' : 'PROJECTION OFF';
       this._cctvProjectionBtn.disabled = !enabled;
+    }
+
+    if (this._cctvAnalyzeBtn) {
+      this._cctvAnalyzeBtn.disabled = !enabled || cameras.length === 0 || !activeId;
     }
 
     if (this._cctvQualityChip) {

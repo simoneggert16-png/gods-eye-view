@@ -131,8 +131,8 @@ const COVERAGE_NEIGHBOR_RADIUS_KM = 1.8;
 // Staggered geometry/frame loading: ground-sampled coverage geometry is
 // refined in small batches (active camera first, then nearest-to-viewer) so
 // enabling the layer never raycasts every camera in a single frame.
-const GEO_LOAD_BATCH_SIZE = 4;
-const GEO_LOAD_BATCH_DELAY_MS = 120;
+const GEO_LOAD_BATCH_SIZE = 16;
+const GEO_LOAD_BATCH_DELAY_MS = 60;
 const GEO_TRACKING_BATCH_SIZE = 2;
 const GEO_TRACKING_BATCH_DELAY_MS = 250;
 const GEO_PROGRESS_NOTIFY_INTERVAL_MS = 300;

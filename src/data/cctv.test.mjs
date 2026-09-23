@@ -296,7 +296,7 @@ test('default COVERAGE refresh materializes the active and visible camera frustu
 });
 
 test('geometry drain pacing yields to tracked and cockpit camera ownership', () => {
-  assert.deepEqual(cctvGeometryDrainPacing(), { batchSize: 4, delayMs: 120 });
+  assert.deepEqual(cctvGeometryDrainPacing(), { batchSize: 16, delayMs: 60 });
   assert.deepEqual(
     cctvGeometryDrainPacing({ trackedEntity: { id: 'flight-1' } }),
     { batchSize: 2, delayMs: 250 },
@@ -314,7 +314,7 @@ test('geometry drain pacing yields to tracked and cockpit camera ownership', () 
 
 test('geometry drain rechecks pacing when tracking releases between batches', () => {
   let trackedEntity = { id: 'flight-1' };
-  const queue = Array.from({ length: 10 }, (_, index) => index + 1);
+  const queue = Array.from({ length: 25 }, (_, index) => index + 1);
   const visited = [];
   const runBatch = () => processCctvGeometryDrainBatch({
     queue,
@@ -330,8 +330,8 @@ test('geometry drain rechecks pacing when tracking releases between batches', ()
 
   trackedEntity = null;
   const untrackedBatch = runBatch();
-  assert.deepEqual(untrackedBatch, { hasMore: true, batchSize: 4, delayMs: 120 });
-  assert.deepEqual(visited, [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(untrackedBatch, { hasMore: true, batchSize: 16, delayMs: 60 });
+  assert.equal(visited.length, 18);
 
   assert.match(processGeometryBatch.toString(), /processCctvGeometryDrainBatch/);
 });

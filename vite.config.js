@@ -26,6 +26,9 @@
  */
 
 import fs from 'node:fs';
+if (typeof process.loadEnvFile === 'function' && fs.existsSync('.env')) {
+  try { process.loadEnvFile('.env'); } catch {}
+}
 import os from 'node:os';
 import { promises as fsp } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -92,6 +95,7 @@ import {
   resolveGeminiVoice,
 } from './src/voice/gevGemini.js';
 import {
+  CHAT_SYSTEM_PROMPT_MAX_CHARS,
   buildOllamaChatRequest,
   extractOllamaChatAnswer,
   OLLAMA_MAX_RESPONSE_BYTES,
@@ -103,6 +107,33 @@ import {
   resolveZaiModel,
   ZAI_MAX_RESPONSE_BYTES,
 } from './src/voice/gevZai.js';
+import {
+  buildAbacusChatRequest,
+  extractAbacusChatAnswer,
+  resolveAbacusModel,
+  ABACUS_MAX_RESPONSE_BYTES,
+} from './src/voice/gevAbacus.js';
+import {
+  getAggregatedBotnetFeed,
+  requestAbacusBriefing,
+} from './src/data/intelBotnet.js';
+import { handleTelegramOsintRequest } from './src/data/telegramOsintProxy.js';
+import {
+  fetchLiveMarketQuotes,
+  analyzeGeopoliticalMarketImpact,
+  searchFinancialSymbols,
+  fetchAssetDeepDive,
+  generateAssetPrognosis,
+} from './src/data/geoMarketEngine.js';
+import {
+  recordVisitorPing,
+  recordCameraStream,
+  resolveGeoFromRequest,
+  getLiveMonitorStats,
+  setDemoSimulation,
+  subscribeToVisitorCamera,
+  getSession,
+} from './src/telemetry/visitorMonitorServer.js';
 import { pinGateProxy } from './src/pinGateServer.js';
 import { backendSpeedAccelerator } from './scripts/backendAccelerator.mjs';
 
@@ -3550,34 +3581,44 @@ function isVideoFeedType(feedType) {
 // ---------------------------------------------------------------------------
 // CCTV proxy constants and source cache state
 // ---------------------------------------------------------------------------
-/** Path to the optional static CCTV source list (JSON array). */
-const DEFAULT_CCTV_SOURCE_FILE = 'config/cctv_sources.austin.json';
+/** Path to the default curated CCTV source list (JSON array). */
+const DEFAULT_CCTV_SOURCE_FILE = 'config/cctv_sources.curated.json';
 /** Austin Open Data portal endpoint for traffic camera records. */
 const DEFAULT_AUSTIN_ROWS_URL = 'https://data.austintexas.gov/api/views/b4k4-adkb/rows.json?accessType=DOWNLOAD';
 /** Default cap on Austin cameras after distance-based prioritization. */
 const DEFAULT_AUSTIN_MAX_SOURCES = 250;
 /** Global cap on total CCTV sources served by the proxy. */
-const DEFAULT_CCTV_MAX_SOURCES = 900;
+const DEFAULT_CCTV_MAX_SOURCES = 1500;
 /** Reference point for Austin camera prioritization (Congress & 6th). */
 const AUSTIN_DOWNTOWN = { lat: 30.2672, lon: -97.7431 };
 /** Caltrans CCTV: one JSON feed per district, identical schema statewide. */
 const CALTRANS_CCTV_URL = (district) =>
   `https://cwwp2.dot.ca.gov/data/d${district}/cctv/cctvStatusD${String(district).padStart(2, '0')}.json`;
-/** Districts fetched by default: SF Bay (4), LA (7), San Diego (11), Sacramento (3). */
-const DEFAULT_CALTRANS_DISTRICTS = '4,7,11,3';
-const DEFAULT_CALTRANS_MAX_SOURCES = 300;
-/** Prioritization anchors: downtown cores of the four default metros. */
+/** Districts fetched by default: SF Bay (4), LA (7), San Diego (11), Sacramento (3), Orange County (12), San Bernardino (8), Central Coast (5). */
+const DEFAULT_CALTRANS_DISTRICTS = '4,7,11,3,12,8,5';
+const DEFAULT_CALTRANS_MAX_SOURCES = 450;
+/** Prioritization anchors: downtown cores of the major California metros. */
 const CALTRANS_ANCHORS = [
   { lat: 37.7793, lon: -122.4193 }, // San Francisco
   { lat: 34.0537, lon: -118.2428 }, // Los Angeles
   { lat: 32.7157, lon: -117.1611 }, // San Diego
   { lat: 38.5816, lon: -121.4944 }, // Sacramento
+  { lat: 33.7175, lon: -117.8311 }, // Orange County (Santa Ana / Irvine)
+  { lat: 34.1083, lon: -117.2898 }, // San Bernardino / Riverside
+  { lat: 34.4208, lon: -119.6982 }, // Santa Barbara / Central Coast
 ];
 /** TfL JamCams: one keyless list endpoint; frames live on a public S3 bucket. */
 const TFL_JAMCAM_URL = 'https://api.tfl.gov.uk/Place/Type/JamCam';
 const TFL_IMAGE_ORIGIN = 'https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/';
 const DEFAULT_TFL_MAX_SOURCES = 250;
 const LONDON_CENTER = { lat: 51.5074, lon: -0.1278 };
+/** Singapore LTA Traffic Images: keyless real-time HD snapshots via data.gov.sg */
+const SINGAPORE_TRAFFIC_URL = 'https://api.data.gov.sg/v1/transport/traffic-images';
+const SINGAPORE_CENTER = { lat: 1.3521, lon: 103.8198 };
+const DEFAULT_SINGAPORE_MAX_SOURCES = 100;
+/** Windy Webcams API V3 base endpoint (requires free WINDY_API_KEY from api.windy.com/keys). */
+const WINDY_WEBCAMS_URL = 'https://api.windy.com/webcams/api/v3/webcams';
+const DEFAULT_WINDY_MAX_SOURCES = 35;
 /** Camera CATALOGS change rarely; 15 min keeps multi-megabyte upstream list refetches (Austin rows.json + 4 Caltrans districts + TfL) infrequent. Frames are fetched per-request and are unaffected. */
 const CCTV_SOURCE_CACHE_MS = 15 * 60 * 1000;
 /** Per-provider catalog-fetch timeout. Bounds the worst-case refresh so one
@@ -3593,9 +3634,26 @@ export const CCTV_FRAME_FETCH_TIMEOUT_MS = 8 * 1000;
 let _cctvSourceCache = [];
 /** @type {number} Epoch-ms when the source cache was last refreshed. */
 let _cctvSourceCacheAt = 0;
+/** @type {number} Modification timestamp of the sources file when last loaded. */
+let _cctvSourceFileMtime = 0;
 /** @type {Promise<Array<object>>|null} In-flight refresh, shared by concurrent
  * callers so a post-TTL burst launches ONE refetch, not one per request. */
 let _cctvSourceInflight = null;
+
+/**
+ * Get mtimeMs of the curated CCTV sources file to detect live edits.
+ * @returns {number}
+ */
+function getCctvSourceFileMtime() {
+  try {
+    const sourceFile = process.env.CCTV_SOURCES_FILE || DEFAULT_CCTV_SOURCE_FILE;
+    const resolved = path.isAbsolute(sourceFile) ? sourceFile : path.resolve(__dirname, sourceFile);
+    return fs.statSync(resolved).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
 
 /**
  * Coerce a value to a finite number, returning fallback if NaN/Infinity.
@@ -4204,6 +4262,148 @@ async function loadTflSourcesFromOpenData() {
 }
 
 /**
+ * Fetch Singapore LTA traffic camera snapshots from data.gov.sg.
+ * Keyless, live 1080p images with exact coordinates.
+ *
+ * @returns {Promise<Array<object>>} Normalized camera source objects.
+ */
+async function loadSingaporeSourcesFromOpenData() {
+  try {
+    const resp = await fetch(SINGAPORE_TRAFFIC_URL, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
+    });
+    if (!resp.ok) {
+      console.warn('[CCTV] Singapore traffic image download failed:', resp.status);
+      return [];
+    }
+    const payload = await resp.json();
+    const items = Array.isArray(payload?.items) ? payload.items : [];
+    const cameras = Array.isArray(items[0]?.cameras) ? items[0].cameras : [];
+    if (!cameras.length) return [];
+
+    const result = [];
+    for (const cam of cameras) {
+      const cameraId = `sg-${cam.camera_id}`;
+      const lat = toFiniteNumber(cam.location?.latitude);
+      const lon = toFiniteNumber(cam.location?.longitude);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+      const imageUrl = typeof cam.image === 'string' ? cam.image : '';
+      if (!imageUrl || !imageUrl.startsWith('https://')) continue;
+
+      const heading = fallbackHeadingFromId(cameraId);
+      result.push({
+        id: cameraId,
+        name: `Singapore Traffic Cam ${cam.camera_id}`,
+        city: 'Singapore',
+        cityId: 'singapore',
+        provider: 'Land Transport Authority Singapore',
+        lat,
+        lon,
+        headingDeg: heading,
+        headingConfidence: 'low',
+        pitchDeg: -18,
+        fovDeg: 54,
+        rangeM: 220,
+        mountHeightM: 14,
+        groundElevationM: 15,
+        feedType: 'image',
+        url: imageUrl,
+        snapshotUrl: imageUrl,
+        sourceKind: 'singapore-open-data',
+        license: 'Singapore Open Data Licence',
+      });
+    }
+
+    const maxRaw = Number(process.env.CCTV_SINGAPORE_MAX_SOURCES || DEFAULT_SINGAPORE_MAX_SOURCES);
+    const maxCount = Number.isFinite(maxRaw) ? Math.max(8, Math.min(200, Math.floor(maxRaw))) : DEFAULT_SINGAPORE_MAX_SOURCES;
+    const prioritized = prioritizeSources(result, maxCount, [SINGAPORE_CENTER]);
+    console.log(`[CCTV] Loaded Singapore camera sources: ${result.length} (using ${prioritized.length})`);
+    return prioritized;
+  } catch (error) {
+    console.warn('[CCTV] Singapore traffic image download error:', error?.message || error);
+    return [];
+  }
+}
+
+/**
+ * Fetch live Swiss and global webcams via Windy Webcams API V3 if WINDY_API_KEY is configured.
+ *
+ * @returns {Promise<Array<object>>} Normalized camera source objects.
+ */
+async function loadWindyWebcamsFromApi() {
+  const apiKey = String(process.env.WINDY_API_KEY || '').trim();
+  if (!apiKey) return [];
+  const countries = String(process.env.CCTV_WINDY_COUNTRIES || 'CH').trim();
+  const totalWanted = Math.min(50, Math.max(10, Number(process.env.CCTV_WINDY_MAX_SOURCES || DEFAULT_WINDY_MAX_SOURCES)));
+  const pages = Math.ceil(totalWanted / 50);
+  const list = [];
+  try {
+    for (let page = 0; page < pages; page++) {
+      const offset = page * 50;
+      const limit = Math.min(50, totalWanted - list.length);
+      if (limit <= 0) break;
+      const url = `${WINDY_WEBCAMS_URL}?countries=${encodeURIComponent(countries)}&limit=${limit}&offset=${offset}&include=images,location`;
+      const resp = await fetch(url, {
+        headers: {
+          Accept: 'application/json',
+          'x-windy-api-key': apiKey,
+        },
+        signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
+      });
+      if (!resp.ok) {
+        console.warn('[CCTV] Windy Webcams API returned HTTP', resp.status);
+        break;
+      }
+      const data = await resp.json();
+      const pageCams = Array.isArray(data?.webcams) ? data.webcams : [];
+      list.push(...pageCams);
+      if (pageCams.length < limit) break;
+    }
+  } catch (error) {
+    console.warn('[CCTV] Windy Webcams API error:', error?.message || error);
+    return [];
+  }
+    const cameras = [];
+    for (const item of list) {
+      const id = `windy-${item.webcamId || item.id}`;
+      const lat = toFiniteNumber(item.location?.latitude);
+      const lon = toFiniteNumber(item.location?.longitude);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+      const title = String(item.title || item.location?.city || `Windy Cam ${item.webcamId}`).trim();
+      const city = String(item.location?.city || item.location?.region || 'Switzerland').trim();
+      const imageUrl = item.images?.current?.preview || item.images?.daylight?.preview || '';
+
+      const heading = fallbackHeadingFromId(id);
+      cameras.push({
+        id,
+        name: title,
+        city,
+        cityId: `windy-${normalizeKey(city) || 'ch'}`,
+        provider: 'Windy.com Webcams',
+        lat,
+        lon,
+        headingDeg: heading,
+        headingConfidence: 'low',
+        pitchDeg: -16,
+        fovDeg: 68,
+        rangeM: 600,
+        mountHeightM: 25,
+        groundElevationM: 450,
+        feedType: 'image',
+        url: imageUrl,
+        snapshotUrl: imageUrl,
+        sourceKind: 'windy-api',
+        license: 'Images courtesy of Windy.com',
+      });
+    }
+    console.log(`[CCTV] Loaded Windy Webcams: ${cameras.length} cameras`);
+    return cameras;
+}
+
+/**
  * Normalize a raw CCTV source item into a canonical shape with safe defaults.
  *
  * @param {object} item - Raw source from file, env, or Austin Open Data.
@@ -4250,9 +4450,12 @@ function normalizeSourceItem(item) {
  */
 async function getCctvSources() {
   const now = Date.now();
-  if (_cctvSourceCache.length && now - _cctvSourceCacheAt <= CCTV_SOURCE_CACHE_MS) {
+  const fileMtime = getCctvSourceFileMtime();
+  const fileChanged = fileMtime > _cctvSourceFileMtime;
+  if (!fileChanged && _cctvSourceCache.length && now - _cctvSourceCacheAt <= CCTV_SOURCE_CACHE_MS) {
     return _cctvSourceCache;
   }
+  _cctvSourceFileMtime = fileMtime;
   // Single-flight: a burst of requests arriving past the TTL shares ONE refresh
   // instead of each launching the full multi-provider refetch. The `.finally`
   // clears the ref so the next post-TTL cycle starts fresh.
@@ -4274,27 +4477,34 @@ async function refreshCctvSources() {
 
   const forceAustin = String(process.env.CCTV_FORCE_AUSTIN || '').trim() === '1';
   const preferAustin = String(process.env.CCTV_PREFER_AUSTIN || '1').trim() !== '0';
-  // Live open-data packs (Austin + Caltrans + TfL) load unless a file/env pack
-  // is configured and live packs aren't forced — same gate that governed the
-  // Austin-only fetch, now governing all three. Each pack fails independently.
-  const needsLiveSources = forceAustin || ((fromFile.length + fromEnv.length) === 0 && preferAustin);
+  // Live open-data packs (Austin + Caltrans + TfL + Singapore + Windy) load alongside
+  // curated file/env sources so both sets enrich the catalog together.
+  const needsLiveSources = forceAustin || preferAustin;
   const tflEnabled = String(process.env.CCTV_TFL_ENABLED || '1').trim() !== '0';
+  const singaporeEnabled = String(process.env.CCTV_SINGAPORE_ENABLED || '1').trim() !== '0';
+  const windyEnabled = Boolean(process.env.WINDY_API_KEY);
 
   let fromAustin = [];
   let fromCaltrans = [];
   let fromTfl = [];
+  let fromSingapore = [];
+  let fromWindy = [];
   if (needsLiveSources) {
-    const [austinResult, caltransResult, tflResult] = await Promise.allSettled([
+    const [austinResult, caltransResult, tflResult, singaporeResult, windyResult] = await Promise.allSettled([
       loadAustinSourcesFromOpenData(),
       loadCaltransSourcesFromOpenData(),
       tflEnabled ? loadTflSourcesFromOpenData() : Promise.resolve([]),
+      singaporeEnabled ? loadSingaporeSourcesFromOpenData() : Promise.resolve([]),
+      windyEnabled ? loadWindyWebcamsFromApi() : Promise.resolve([]),
     ]);
     fromAustin = austinResult.status === 'fulfilled' ? austinResult.value : [];
     fromCaltrans = caltransResult.status === 'fulfilled' ? caltransResult.value : [];
     fromTfl = tflResult.status === 'fulfilled' ? tflResult.value : [];
+    fromSingapore = singaporeResult.status === 'fulfilled' ? singaporeResult.value : [];
+    fromWindy = windyResult.status === 'fulfilled' ? windyResult.value : [];
   }
   // Live sources first so file/env overrides win on duplicate IDs (Map last-write).
-  const merged = [...fromAustin, ...fromCaltrans, ...fromTfl, ...fromFile, ...fromEnv];
+  const merged = [...fromAustin, ...fromCaltrans, ...fromTfl, ...fromSingapore, ...fromWindy, ...fromFile, ...fromEnv];
 
   // Deduplicate by camera ID (last-write wins because of Map.set)
   const byId = new Map();
@@ -4307,7 +4517,7 @@ async function refreshCctvSources() {
 
   const mergedSources = Array.from(byId.values());
   const maxRaw = Number(process.env.CCTV_MAX_SOURCES || DEFAULT_CCTV_MAX_SOURCES);
-  const maxCount = Number.isFinite(maxRaw) ? Math.max(8, Math.min(1200, Math.floor(maxRaw))) : DEFAULT_CCTV_MAX_SOURCES;
+  const maxCount = Number.isFinite(maxRaw) ? Math.max(8, Math.min(2500, Math.floor(maxRaw))) : DEFAULT_CCTV_MAX_SOURCES;
   if (mergedSources.length > maxCount) {
     console.warn(`[CCTV] source catalog ${mergedSources.length} exceeds cap ${maxCount}; keeping the first ${maxCount} (raise CCTV_MAX_SOURCES or lower a per-pack cap to change which).`);
   }
@@ -4554,9 +4764,9 @@ function cctvProxy() {
   /** @type {Map<string,{id:string,status:string,sourceKind:string,label:string,message:string,updatedAt:number}>} */
   const health = new Map();
   /** Cap on health map entries to prevent unbounded growth. Sized to cover the
-   * full served catalog (CCTV_MAX_SOURCES hard-bounds at 1200) so health/status
-   * observability isn't silently evicted for a default 800-camera catalog. */
-  const HEALTH_MAX_ENTRIES = 1200;
+   * full served catalog (CCTV_MAX_SOURCES hard-bounds at 2500) so health/status
+   * observability isn't silently evicted. */
+  const HEALTH_MAX_ENTRIES = 2000;
 
   /** Update the health entry for a camera, evicting the oldest entry if at capacity. */
   const setHealth = (cameraId, patch) => {
@@ -4747,6 +4957,148 @@ function cctvProxy() {
               res.end(JSON.stringify({ error: 'Media proxy failed' }));
               return;
             }
+          }
+
+          if (url.pathname.startsWith('/analyze/')) {
+            const cameraId = decodeURIComponent(url.pathname.replace('/analyze/', '').trim()) || 'camera';
+            const source = sourceById.get(cameraId);
+            if (!source) {
+              res.writeHead(404, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+              res.end(JSON.stringify({ ok: false, error: `Camera ${cameraId} not found` }));
+              return;
+            }
+
+            // Fetch live frame image if available
+            const upstreamCandidate =
+              source?.snapshotUrl
+              || (!isVideoFeedType(normalizeFeedType(source?.feedType)) ? source?.url : '');
+            let img = await fetchCctvImageFromUpstream(upstreamCandidate);
+            let imgBase64 = null;
+            let imgMime = 'image/jpeg';
+            if (img?.ok && img?.body) {
+              imgBase64 = Buffer.from(img.body).toString('base64');
+              imgMime = img.contentType || 'image/jpeg';
+            } else {
+              const sv = await streetViewFallback({
+                lat: Number(source.lat),
+                lon: Number(source.lon),
+                heading: Number(source.headingDeg || 0),
+                fov: Number(source.fovDeg || 60),
+                pitch: Number(source.pitchDeg || 0),
+              });
+              if (sv?.ok && sv?.body) {
+                imgBase64 = Buffer.from(sv.body).toString('base64');
+                imgMime = sv.contentType || 'image/jpeg';
+              }
+            }
+
+            const lang = (url.searchParams.get('lang') || 'de').toLowerCase().startsWith('de') ? 'de' : 'en';
+            let brief = '';
+            let usedAi = 'context';
+
+            const abacusKey = String(process.env.ABACUS_API_KEY || '').trim();
+            const geminiKey = String(process.env.GEMINI_API_KEY || '').trim();
+
+            if (abacusKey && imgBase64) {
+              try {
+                const sysPrompt = lang === 'de'
+                  ? 'Du bist der taktische CCTV-Vision-Analyst für God\'s Eye View. Fasse die Kamerasicht präzise in maximal 3 kurzen Sätzen zusammen: 1) Wetter/Sichtbedingungen, 2) Verkehrsfluss/Personenaufkommen/Aktivität, 3) Orientierung/Besonderheiten der Szene. Kein Markdown, keine Einleitungsfloskeln.'
+                  : 'You are the tactical CCTV Vision Analyst for God\'s Eye View. Provide a rapid 3-sentence brief: 1) Weather and visibility, 2) Traffic/pedestrian activity, 3) Notable landmarks or orientation. Plain text, concise, no markdown.';
+                const userPrompt = `Kamera: ${source.name}, Ort: ${source.city || 'Schweiz'}, Blickrichtung: ${source.headingDeg || 0}°. Was ist in diesem Kamerabild zu sehen?`;
+                const abacusReq = buildAbacusChatRequest({
+                  message: userPrompt,
+                  system: sysPrompt,
+                  images: [`data:${imgMime};base64,${imgBase64}`],
+                });
+                const abacusRes = await postChatUpstream('https://routellm.abacus.ai/v1/chat/completions', abacusKey, abacusReq.body, ABACUS_MAX_RESPONSE_BYTES);
+                if (abacusRes.ok) {
+                  const extracted = extractAbacusChatAnswer(abacusRes.data);
+                  if (extracted?.text) {
+                    brief = extracted.text;
+                    usedAi = 'abacus';
+                  }
+                }
+              } catch {
+                // fall through
+              }
+            }
+
+            if (!brief && geminiKey && imgBase64) {
+              try {
+                const gemModel = process.env.GEMINI_SEE_MODEL || process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
+                const prompt = lang === 'de'
+                  ? `Analysiere diese Live-Kameraaufnahme (${source.name}, ${source.city || 'Schweiz'}, Blickwinkel ${source.headingDeg || 0}°). Fasse Wetter, Sicht/Lichtverhältnisse, Aktivität und Umgebung präzise in maximal 2-3 kurzen Sätzen zusammen. Kein Markdown.`
+                  : `Analyze this live camera view (${source.name}, ${source.city || 'Switzerland'}, heading ${source.headingDeg || 0}°). Summarize weather, visibility, activity and surroundings in 2-3 short sentences. No markdown.`;
+                const gemBody = {
+                  contents: [{
+                    parts: [
+                      { text: prompt },
+                      { inline_data: { mime_type: imgMime, data: imgBase64 } }
+                    ]
+                  }],
+                  generationConfig: { maxOutputTokens: 800, temperature: 0.2 }
+                };
+                const gemRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${gemModel}:generateContent`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'x-goog-api-key': geminiKey },
+                  body: JSON.stringify(gemBody),
+                });
+                if (gemRes.ok) {
+                  const gemData = await gemRes.json();
+                  const parts = gemData?.candidates?.[0]?.content?.parts || [];
+                  const textPart = parts.find((p) => typeof p?.text === 'string' && p.text.trim()) || parts[0];
+                  brief = textPart?.text?.trim() || '';
+                  if (brief) usedAi = 'gemini';
+                }
+              } catch {
+                // fall through
+              }
+            }
+
+            if (!brief && process.env.OLLAMA_API_KEY && imgBase64) {
+              try {
+                const ollamaKey = String(process.env.OLLAMA_API_KEY).trim();
+                const ollamaModel = process.env.OLLAMA_VISION_MODEL || 'gemma4:31b';
+                const userPrompt = lang === 'de'
+                  ? `Kamera: ${source.name}, Ort: ${source.city || 'Schweiz'}, Blickwinkel: ${source.headingDeg || 0}°. Was ist in diesem Kamerabild zu sehen? Fasse Wetter und Umgebung in 2 kurzen Sätzen zusammen. Kein Markdown.`
+                  : `Camera: ${source.name}, Location: ${source.city || 'Switzerland'}, Heading: ${source.headingDeg || 0}°. What is visible in this frame? Summarize in 2 short sentences. No markdown.`;
+                const ollamaRes = await postChatUpstream('https://ollama.com/api/chat', ollamaKey, {
+                  model: ollamaModel,
+                  messages: [{
+                    role: 'user',
+                    content: userPrompt,
+                    images: [imgBase64],
+                  }],
+                  stream: false,
+                }, 64 * 1024);
+                if (ollamaRes.ok && ollamaRes.data?.message?.content) {
+                  brief = String(ollamaRes.data.message.content).trim();
+                  if (brief) usedAi = 'ollama';
+                }
+              } catch {
+                // fall through
+              }
+            }
+
+            if (!brief) {
+              const dir = directionToHeading(source.headingDeg || 0) || `${source.headingDeg}°`;
+              brief = lang === 'de'
+                ? `CCTV-Kamera „${source.name}“ in ${source.city || 'Schweiz'} ausgerichtet nach ${source.headingDeg}° (${dir}). Sichtkegel deckt ca. ${source.rangeM || 300}m bei ${source.fovDeg || 60}° FOV ab. Feed ist aktiv (${source.feedType || 'snapshot'}).`
+                : `CCTV camera "${source.name}" in ${source.city || 'Switzerland'} aligned at ${source.headingDeg}° (${dir}). Field of view covers approx ${source.rangeM || 300}m at ${source.fovDeg || 60}° FOV. Feed active (${source.feedType || 'snapshot'}).`;
+            }
+
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify({
+              ok: true,
+              id: source.id,
+              name: source.name,
+              city: source.city,
+              headingDeg: source.headingDeg,
+              hasImage: Boolean(imgBase64),
+              analyst: usedAi,
+              brief,
+            }));
+            return;
           }
 
           if (!url.pathname.startsWith('/frame/')) {
@@ -5842,7 +6194,7 @@ function toFiveWordHudSummary(value) {
  * Shared helper: POST a chat body upstream with a Bearer key.
  * Returns { status, data } with a capped, parsed body (or {}).
  */
-async function postChatUpstream(url, apiKey, body, maxBytes) {
+async function postChatUpstream(url, apiKey, body, maxBytes, timeoutMs = 12000) {
   const upstream = await fetch(url, {
     method: 'POST',
     redirect: 'manual',
@@ -5851,6 +6203,7 @@ async function postChatUpstream(url, apiKey, body, maxBytes) {
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (upstream.status >= 300 && upstream.status < 400) {
     try { await upstream.body?.cancel?.(); } catch { /* no-op */ }
@@ -5903,7 +6256,7 @@ export function chatBrainsProxy() {
         const parsed = JSON.parse(await readRequestBody(req, 640 * 1024) || '{}');
         message = String(parsed?.message || '').trim();
         contextText = String(parsed?.context || '').trim();
-        system = String(parsed?.system || '').trim().slice(0, 2000);
+        system = String(parsed?.system || '').trim().slice(0, CHAT_SYSTEM_PROMPT_MAX_CHARS);
         if (Array.isArray(parsed?.images)) images = parsed.images.slice(0, 2).map(String).map((s) => s.slice(0, 400000));
       } catch {
         json(400, { error: 'Malformed JSON body', answer: null });
@@ -5916,10 +6269,9 @@ export function chatBrainsProxy() {
       const { model, body } = buildOllamaChatRequest({ message, contextText, model: process.env.OLLAMA_MODEL, visionModel: process.env.OLLAMA_VISION_MODEL, system, images });
       let result;
       try {
-        result = await postChatUpstream('https://ollama.com/api/chat', apiKey, body, OLLAMA_MAX_RESPONSE_BYTES);
+        result = await postChatUpstream('https://ollama.com/api/chat', apiKey, body, OLLAMA_MAX_RESPONSE_BYTES, 6000);
       } catch (error) {
-        json(502, { error: `Ollama request failed: ${String(error?.message || error).slice(0, 120)}`, answer: null });
-        return;
+        result = { status: 504, ok: false, error: String(error?.message || error) };
       }
       if (result.refusedRedirect) {
         json(502, { error: 'Ollama redirects are refused', answer: null });
@@ -5932,6 +6284,57 @@ export function chatBrainsProxy() {
       if (result.status === 429) {
         json(429, { error: 'Ollama quota exhausted — try again in a minute', retryable: true, answer: null }, 60);
         return;
+      }
+      if (result.status === 402 || (!result.ok && result.status !== 429)) {
+        // Transparent fallback to Gemini/Abacus if Ollama Cloud lacks subscription/credits
+        const abacusKey = String(process.env.ABACUS_API_KEY || '').trim();
+        const fallbackModel = String(process.env.ABACUS_MODEL || 'gemini-2.5-flash').trim();
+        if (abacusKey) {
+          try {
+            const abacusReq = buildAbacusChatRequest({
+              message,
+              contextText,
+              model: fallbackModel,
+              system,
+              images,
+            });
+            let abacusRes = await postChatUpstream(
+              'https://routellm.abacus.ai/v1/chat/completions',
+              abacusKey,
+              abacusReq.body,
+              ABACUS_MAX_RESPONSE_BYTES,
+              12000,
+            );
+            if (!abacusRes.ok && images && images.length) {
+              const textReq = buildAbacusChatRequest({
+                message,
+                contextText,
+                model: fallbackModel,
+                system,
+                images: null,
+              });
+              abacusRes = await postChatUpstream(
+                'https://routellm.abacus.ai/v1/chat/completions',
+                abacusKey,
+                textReq.body,
+                ABACUS_MAX_RESPONSE_BYTES,
+                12000,
+              );
+            }
+            if (abacusRes.ok) {
+              const { text } = extractAbacusChatAnswer(abacusRes.data);
+              if (text) {
+                json(200, { answer: text.slice(0, 1600), blocked: false, error: null, fallbackModel });
+                return;
+              }
+            }
+          } catch {}
+        }
+        if (result.status === 402) {
+          const detail = String(result.data?.error || '').slice(0, 200);
+          json(402, { error: detail || 'Ollama model requires subscription or credits', answer: null });
+          return;
+        }
       }
       if (result.status === 401 || result.status === 403) {
         json(502, { error: 'Ollama rejected the API key', answer: null });
@@ -5975,7 +6378,7 @@ export function chatBrainsProxy() {
         const parsed = JSON.parse(await readRequestBody(req, 640 * 1024) || '{}');
         message = String(parsed?.message || '').trim();
         contextText = String(parsed?.context || '').trim();
-        system = String(parsed?.system || '').trim().slice(0, 2000);
+        system = String(parsed?.system || '').trim().slice(0, CHAT_SYSTEM_PROMPT_MAX_CHARS);
         if (Array.isArray(parsed?.images)) images = parsed.images.slice(0, 2).map(String).map((s) => s.slice(0, 400000));
       } catch {
         json(400, { error: 'Malformed JSON body', answer: null });
@@ -6021,10 +6424,427 @@ export function chatBrainsProxy() {
       }
       json(200, { answer: text.slice(0, 1200), blocked: false, error: null });
     });
+
+    middlewares.use('/api/abacus/chat', async (req, res) => {
+      const json = (status, payload, retryAfter) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        if (retryAfter) res.setHeader('Retry-After', String(retryAfter));
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'POST') {
+        json(405, { error: 'Method not allowed', answer: null });
+        return;
+      }
+      const apiKey = String(process.env.ABACUS_API_KEY || '').trim();
+      if (!apiKey) {
+        json(503, { error: 'ABACUS_API_KEY is not set', code: 'ABACUS_NOT_CONFIGURED', answer: null });
+        return;
+      }
+      let message = '';
+      let contextText = '';
+      let system = '';
+      let images = null;
+      try {
+        const parsed = JSON.parse(await readRequestBody(req, 640 * 1024) || '{}');
+        message = String(parsed?.message || '').trim();
+        contextText = String(parsed?.context || '').trim();
+        system = String(parsed?.system || '').trim().slice(0, CHAT_SYSTEM_PROMPT_MAX_CHARS);
+        if (Array.isArray(parsed?.images)) images = parsed.images.slice(0, 2).map(String).map((s) => s.slice(0, 400000));
+      } catch {
+        json(400, { error: 'Malformed JSON body', answer: null });
+        return;
+      }
+      if (!message) {
+        json(400, { error: 'Missing message', answer: null });
+        return;
+      }
+      const { model, body } = buildAbacusChatRequest({ message, contextText, model: process.env.ABACUS_MODEL, system, images });
+      let result;
+      try {
+        result = await postChatUpstream('https://routellm.abacus.ai/v1/chat/completions', apiKey, body, ABACUS_MAX_RESPONSE_BYTES);
+      } catch (error) {
+        json(502, { error: `Abacus.AI request failed: ${String(error?.message || error).slice(0, 120)}`, answer: null });
+        return;
+      }
+      if (result.refusedRedirect) {
+        json(502, { error: 'Abacus.AI redirects are refused', answer: null });
+        return;
+      }
+      if (result.unreadable) {
+        json(502, { error: 'Abacus.AI response too large or unreadable', answer: null });
+        return;
+      }
+      if (result.status === 429) {
+        json(429, { error: 'Abacus.AI quota exhausted — try again in a minute', retryable: true, answer: null }, 60);
+        return;
+      }
+      if (result.status === 401 || result.status === 403) {
+        json(502, { error: 'Abacus.AI rejected the API key', answer: null });
+        return;
+      }
+      if (!result.ok) {
+        const detail = String(result.data?.error?.message || result.data?.error || '').slice(0, 200);
+        json(502, { error: detail ? `Abacus.AI error: ${detail}` : `Abacus.AI returned ${result.status}`, answer: null });
+        return;
+      }
+      const { text, blocked, reason } = extractAbacusChatAnswer(result.data);
+      if (!text) {
+        json(200, { answer: null, blocked: true, error: `Abacus.AI gave no answer (${reason})` });
+        return;
+      }
+      json(200, { answer: text.slice(0, 1200), blocked: false, error: null });
+    });
   }
 
   return {
     name: 'chat-brains-proxy',
+    configureServer(server) {
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
+    },
+  };
+}
+
+/**
+ * Vite plugin: Live Botnet Intelligence feed & Abacus AI Tactical SITREPs.
+ *
+ * Exposes:
+ * - GET  /api/intel/botnet: Unified tactical dispatch stream (NOAA severe weather, Swiss hotspots, GDELT crises)
+ * - POST /api/intel/briefing: Deep tactical military situation briefings generated via Abacus Supercomputer
+ * - GET  /api/weather/alerts: Severe weather & tornado warnings
+ */
+export function intelBotnetProxy() {
+  function install(middlewares) {
+    middlewares.use('/api/intel/botnet', async (req, res) => {
+      const json = (status, payload) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'public, max-age=60');
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'GET') {
+        json(405, { ok: false, error: 'Method not allowed' });
+        return;
+      }
+      try {
+        const url = new URL(req.url || '', 'http://localhost');
+        const forceRefresh = url.searchParams.get('refresh') === '1';
+        const feed = await getAggregatedBotnetFeed({ forceRefresh });
+        json(200, { ok: true, ...feed });
+      } catch (err) {
+        json(500, { ok: false, error: String(err?.message || err) });
+      }
+    });
+
+    middlewares.use('/api/intel/briefing', async (req, res) => {
+      const json = (status, payload) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'POST') {
+        json(405, { ok: false, error: 'Method not allowed' });
+        return;
+      }
+      let body = {};
+      try {
+        const text = await readRequestBody(req, 64 * 1024);
+        body = JSON.parse(text || '{}');
+      } catch {
+        json(400, { ok: false, error: 'Malformed JSON body' });
+        return;
+      }
+      if (!body.headline) {
+        json(400, { ok: false, error: 'Missing headline parameter' });
+        return;
+      }
+      try {
+        const result = await requestAbacusBriefing({
+          headline: body.headline,
+          locationName: body.locationName,
+          lat: body.lat ?? body.latitude,
+          lon: body.lon ?? body.longitude,
+          category: body.category,
+          details: body.details ?? body.summary,
+        });
+        json(200, result);
+      } catch (err) {
+        json(500, { ok: false, error: String(err?.message || err) });
+      }
+    });
+
+    middlewares.use('/api/weather/alerts', async (req, res) => {
+      const json = (status, payload) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'public, max-age=120');
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'GET') {
+        json(405, { ok: false, error: 'Method not allowed' });
+        return;
+      }
+      try {
+        const feed = await getAggregatedBotnetFeed();
+        const weatherAlerts = (feed.dispatches || []).filter((d) => d.category === 'UNWETTER');
+        json(200, { ok: true, count: weatherAlerts.length, alerts: weatherAlerts });
+      } catch (err) {
+        json(500, { ok: false, error: String(err?.message || err) });
+      }
+    });
+
+    middlewares.use('/api/osint/telegram', async (req, res) => {
+      await handleTelegramOsintRequest(req, res);
+    });
+
+    middlewares.use('/api/finance/markets', async (req, res) => {
+      const json = (status, payload) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'public, max-age=60');
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'GET') {
+        json(405, { ok: false, error: 'Method not allowed' });
+        return;
+      }
+      try {
+        const url = new URL(req.url || '', 'http://localhost');
+        const forceRefresh = url.searchParams.get('refresh') === '1';
+        const quotes = await fetchLiveMarketQuotes({ forceRefresh });
+        const feed = await getAggregatedBotnetFeed().catch(() => ({ dispatches: [] }));
+        const impact = analyzeGeopoliticalMarketImpact(feed.dispatches || [], quotes);
+        json(200, { ok: true, ...impact });
+      } catch (err) {
+        json(500, { ok: false, error: String(err?.message || err) });
+      }
+    });
+
+    middlewares.use('/api/finance/search', async (req, res) => {
+      const json = (status, payload) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'public, max-age=30');
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'GET') {
+        json(405, { ok: false, error: 'Method not allowed' });
+        return;
+      }
+      try {
+        const url = new URL(req.url || '', 'http://localhost');
+        const q = url.searchParams.get('q') || '';
+        const results = await searchFinancialSymbols(q);
+        json(200, { ok: true, query: q, count: results.length, results });
+      } catch (err) {
+        json(500, { ok: false, error: String(err?.message || err) });
+      }
+    });
+
+    middlewares.use('/api/finance/prognosis', async (req, res) => {
+      const json = (status, payload) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'public, max-age=60');
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'GET') {
+        json(405, { ok: false, error: 'Method not allowed' });
+        return;
+      }
+      try {
+        const url = new URL(req.url || '', 'http://localhost');
+        const symbol = url.searchParams.get('symbol') || '';
+        if (!symbol) {
+          json(400, { ok: false, error: 'Kein Symbol angegeben' });
+          return;
+        }
+        const assetInfo = await fetchAssetDeepDive(symbol);
+        const feed = await getAggregatedBotnetFeed().catch(() => ({ dispatches: [] }));
+        const prognosis = generateAssetPrognosis(assetInfo, feed.dispatches || []);
+        json(200, { ok: true, asset: assetInfo, prognosis });
+      } catch (err) {
+        json(500, { ok: false, error: String(err?.message || err) });
+      }
+    });
+  }
+
+  return {
+    name: 'intel-botnet-proxy',
+    configureServer(server) {
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
+    },
+  };
+}
+
+/**
+ * Vite plugin: Live Visitor Telemetry & Surveillance Radar Server Endpoints.
+ *
+ * Exposes:
+ * - POST /api/telemetry/ping: Client telemetry heartbeat (camera, active layers, action)
+ * - GET  /api/telemetry/stats: Live visitor radar statistics, active sessions & stream
+ * - POST /api/telemetry/simulate: Toggle simulated demo visitors
+ */
+export function visitorMonitorProxy() {
+  function install(middlewares) {
+    middlewares.use('/api/telemetry/ping', async (req, res) => {
+      const json = (status, payload) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'POST') {
+        json(405, { ok: false, error: 'Method not allowed' });
+        return;
+      }
+      try {
+        const text = await readRequestBody(req, 64 * 1024);
+        const body = JSON.parse(text || '{}');
+        const ip = req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || '';
+        const geo = resolveGeoFromRequest(req);
+        const userAgent = req.headers['user-agent'] || '';
+
+        const session = recordVisitorPing({
+          sessionId: body.sessionId,
+          ip,
+          geo,
+          userAgent,
+          camera: body.camera,
+          viewName: body.viewName,
+          activeLayers: body.activeLayers,
+          action: body.action,
+        });
+
+        json(200, { ok: true, session });
+      } catch (err) {
+        json(500, { ok: false, error: String(err?.message || err) });
+      }
+    });
+
+    middlewares.use('/api/telemetry/stats', async (req, res) => {
+      const json = (status, payload) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'GET') {
+        json(405, { ok: false, error: 'Method not allowed' });
+        return;
+      }
+      try {
+        const stats = getLiveMonitorStats();
+        json(200, stats);
+      } catch (err) {
+        json(500, { ok: false, error: String(err?.message || err) });
+      }
+    });
+
+    middlewares.use('/api/telemetry/camera-stream', async (req, res) => {
+      const json = (status, payload) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'POST') {
+        json(405, { ok: false, error: 'Method not allowed' });
+        return;
+      }
+      try {
+        const text = await readRequestBody(req, 16 * 1024);
+        const body = JSON.parse(text || '{}');
+        const session = recordCameraStream({
+          sessionId: body.sessionId,
+          camera: body.camera,
+        });
+        json(200, { ok: true, session: Boolean(session) });
+      } catch (err) {
+        json(500, { ok: false, error: String(err?.message || err) });
+      }
+    });
+
+    middlewares.use('/api/telemetry/spectate-stream', (req, res) => {
+      if (req.method !== 'GET') {
+        res.statusCode = 405;
+        res.end('Method not allowed');
+        return;
+      }
+      try {
+        const parsedUrl = new URL(req.url, 'http://127.0.0.1');
+        const sessionId = parsedUrl.searchParams.get('sessionId');
+        if (!sessionId) {
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ok: false, error: 'Missing sessionId query parameter' }));
+          return;
+        }
+
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache, no-transform',
+          'Connection': 'keep-alive',
+          'Access-Control-Allow-Origin': '*',
+          'X-Accel-Buffering': 'no',
+        });
+        res.write(': connected\n\n');
+
+        // Immediately send current camera if available
+        const currentSession = getSession(sessionId);
+        if (currentSession?.camera) {
+          res.write(`data: ${JSON.stringify({ sessionId, camera: currentSession.camera, timestamp: Date.now() })}\n\n`);
+        }
+
+        const unsubscribe = subscribeToVisitorCamera(sessionId, (payload) => {
+          try {
+            res.write(`data: ${JSON.stringify(payload)}\n\n`);
+          } catch {}
+        });
+
+        req.on('close', () => {
+          unsubscribe();
+        });
+      } catch (err) {
+        try {
+          res.statusCode = 500;
+          res.end(String(err?.message || err));
+        } catch {}
+      }
+    });
+
+    middlewares.use('/api/telemetry/simulate', async (req, res) => {
+      const json = (status, payload) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method !== 'POST') {
+        json(405, { ok: false, error: 'Method not allowed' });
+        return;
+      }
+      try {
+        const text = await readRequestBody(req, 16 * 1024);
+        const body = JSON.parse(text || '{}');
+        const newState = setDemoSimulation(body.enable);
+        json(200, { ok: true, demoSimulated: newState });
+      } catch (err) {
+        json(500, { ok: false, error: String(err?.message || err) });
+      }
+    });
+  }
+
+  return {
+    name: 'visitor-monitor-proxy',
     configureServer(server) {
       install(server.middlewares);
     },
@@ -6423,6 +7243,19 @@ export function geminiFreeProxy() {
         res.setHeader('Cache-Control', 'no-store');
         res.end(JSON.stringify(payload));
       };
+      if (req.method === 'DELETE') {
+        try {
+          fs.mkdirSync(REALTIME_DEBUG_LOG_DIR, { recursive: true });
+          const vFile = path.join(REALTIME_DEBUG_LOG_DIR, 'voice-conversations.jsonl');
+          const rFile = path.join(REALTIME_DEBUG_LOG_DIR, 'realtime-conversations.jsonl');
+          if (fs.existsSync(vFile)) fs.writeFileSync(vFile, '');
+          if (fs.existsSync(rFile)) fs.writeFileSync(rFile, '');
+          json(200, { ok: true, cleared: true });
+        } catch {
+          json(500, { error: 'Could not clear log files' });
+        }
+        return;
+      }
       if (req.method !== 'POST') {
         json(405, { error: 'Method not allowed' });
         return;
@@ -8896,11 +9729,13 @@ export default defineConfig(({ mode }) => {
       openAiRealtimeProxy(),
       geminiFreeProxy(),
       chatBrainsProxy(),
+      intelBotnetProxy(),
+      visitorMonitorProxy(),
       googlePlacesContextProxy(),
       keySetupEndpoint(),
     ],
     server: {
-      host: env.HOST === '0.0.0.0' ? '::' : (env.HOST || '::'),
+      host: env.HOST || '0.0.0.0',
       port: parseInt(env.PORT, 10) || 4173,
       // Allow cloud hosts like onrender.com and all interfaces
       allowedHosts: true,
@@ -8921,6 +9756,8 @@ export default defineConfig(({ mode }) => {
       },
     },
     preview: {
+      host: env.HOST || '0.0.0.0',
+      port: parseInt(env.PORT, 10) || 4173,
       allowedHosts: true,
     },
     // Expose selected API keys to the browser via import.meta.env.*

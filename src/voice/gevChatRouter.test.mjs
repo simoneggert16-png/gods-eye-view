@@ -46,8 +46,36 @@ test('extractDirectAnswer extracts plain text, json say/answer, and skips tool c
 test('router prompt carries the tool menu', () => {
   assert.ok(ROUTER_SYSTEM_PROMPT.includes('fly_to_location'));
   assert.ok(ROUTER_SYSTEM_PROMPT.includes('{"name"'));
-  assert.equal(ROUTER_TOOLS.length, 29, 'router menu covers every voice tool — update with the registry');
+  assert.equal(ROUTER_TOOLS.length, 35, 'router menu covers every voice tool — update with the registry');
+  assert.ok(ROUTER_TOOLS.some((line) => line.startsWith('query_osint_news')));
+  assert.ok(ROUTER_TOOLS.some((line) => line.startsWith('query_financial_market_impact')));
+  assert.ok(ROUTER_TOOLS.some((line) => line.startsWith('search_and_forecast_asset')));
   assert.ok(ROUTER_TOOLS.some((line) => line.startsWith('fly_to_location')));
+  assert.ok(
+    ROUTER_SYSTEM_PROMPT.includes('GENERIC / NEAREST AIRCRAFT'),
+    'generic plane requests must be routed to nearest-aircraft selection, not identity search',
+  );
+  assert.ok(
+    ROUTER_TOOLS.some((line) => line.startsWith('select_nearest_aircraft') && line.includes('generic')),
+    'the nearest-aircraft tool must explicitly own generic requests',
+  );
+  assert.ok(
+    ROUTER_SYSTEM_PROMPT.includes('GENERIC / NEAREST SATELLITE'),
+    'generic satellite requests must route to nearest-satellite tracking',
+  );
+  assert.ok(ROUTER_SYSTEM_PROMPT.includes('Sateliten'), 'the common one-l misspelling is covered');
+  assert.ok(
+    ROUTER_SYSTEM_PROMPT.includes('NEAREST-AIRCRAFT PLACES:'),
+    'place-qualified aircraft requests must bind locationQuery before execution',
+  );
+  assert.ok(
+    ROUTER_SYSTEM_PROMPT.includes('differentFromSelected:true'),
+    'another/next aircraft follow-ups must exclude the current selection',
+  );
+  assert.ok(
+    ROUTER_SYSTEM_PROMPT.includes('SELECTED OBJECT QUESTIONS:'),
+    'questions about the selected object must call get_entity_context first',
+  );
 });
 
 test('router prompt resolves deictics and worldwide landmarks', () => {
@@ -137,8 +165,14 @@ test('router calls survive small-model format drift', () => {
     { name: 'fly_to_location', args: { query: 'Jervis Bay', viewMode: 'close' }, say: '' },
   );
   assert.equal(extractDegenerateRouterCall('just prose, no tool'), null);
-  assert.equal(ROUTER_TOOL_NAMES.length, 29);
+  assert.equal(ROUTER_TOOL_NAMES.length, 35);
+  assert.ok(ROUTER_TOOL_NAMES.includes('query_osint_news'));
+  assert.ok(ROUTER_TOOL_NAMES.includes('query_financial_market_impact'));
+  assert.ok(ROUTER_TOOL_NAMES.includes('search_and_forecast_asset'));
   assert.ok(ROUTER_TOOL_NAMES.includes('track_entity'));
+  assert.ok(ROUTER_TOOL_NAMES.includes('mark_tactical_impact_zone'));
+  assert.ok(ROUTER_TOOL_NAMES.includes('fly_to_nearest_tactical_target'));
+  assert.ok(ROUTER_TOOL_NAMES.includes('describe_tactical_event'));
   assert.ok(ROUTER_TOOL_NAMES.includes('web_search'), 'the model can look facts up itself');
 });
 
@@ -167,6 +201,16 @@ test('incomplete brain calls are rejected before execution', () => {
   assert.equal(isCompleteRouterCall('annotate_map', {}), false);
   assert.equal(isCompleteRouterCall('annotate_map', { annotations: [{ type: 'area', target: 'Pine Gap' }] }), true);
   assert.equal(synthRouterSay('track_entity', { query: 'SATGUS' }, 'de'), 'Verfolge SATGUS.');
+  assert.equal(synthRouterSay('track_entity', { query: 'nearest satellite' }, 'de'), 'Verfolge den nächsten Satelliten.');
+  assert.equal(synthRouterSay('track_entity', { query: 'einen Sateliten' }, 'en'), 'Tracking the nearest satellite.');
+  assert.equal(
+    synthRouterSay('track_entity', { query: 'ein anderer Satellit' }, 'de'),
+    'Wähle einen anderen Satelliten.',
+  );
+  assert.equal(
+    synthRouterSay('track_entity', { query: 'another satellite' }, 'en'),
+    'Choosing a different satellite.',
+  );
   assert.equal(synthRouterSay('fly_to_location', { query: 'Jervis Bay' }, 'de'), 'Fliege nach Jervis Bay.');
   assert.equal(synthRouterSay('fly_to_location', { query: 'Paris' }, 'en'), 'Flying to Paris.');
 });

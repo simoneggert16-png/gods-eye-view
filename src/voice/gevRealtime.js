@@ -407,14 +407,11 @@ function attachFreeVoiceTextInput(ui, freeVoice, liveVoice = null) {
     send.textContent = 'SEND';
     send.setAttribute('aria-label', 'Run the typed command');
     form.append(input, send);
-    form.addEventListener('submit', (event) => {
-      event.preventDefault();
+    const dispatchChat = (rawText) => {
       resumeGoogleTTSAudio();
-      const text = input.value;
-      if (!String(text || '').trim()) return;
-      input.value = '';
-      // Reveal the chat history so typed answers are READ, not just heard —
-      // this box is the full chat surface when speaking is impossible.
+      const text = String(rawText || '').trim();
+      if (!text) return;
+      // Reveal the chat history so answers are visible in the log
       try {
         const drawer = root.querySelector('[data-gev-chat-log]');
         const toggle = root.querySelector('[data-gev-chat-toggle]');
@@ -433,6 +430,20 @@ function attachFreeVoiceTextInput(ui, freeVoice, liveVoice = null) {
       }
       if (typeof freeVoice?.handleChatText === 'function') void freeVoice.handleChatText(text);
       else if (typeof freeVoice?.handleText === 'function') void freeVoice.handleText(text);
+    };
+
+    window.__gevSendChat = dispatchChat;
+    if (window.__gevPendingChat) {
+      const pending = window.__gevPendingChat;
+      window.__gevPendingChat = null;
+      setTimeout(() => dispatchChat(pending), 100);
+    }
+
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const text = input.value;
+      input.value = '';
+      dispatchChat(text);
     });
     root.appendChild(form);
   } catch {

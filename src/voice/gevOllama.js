@@ -13,8 +13,8 @@
 /** Default cloud model (documented cloud example; override with OLLAMA_MODEL). */
 export const OLLAMA_DEFAULT_MODEL = 'gpt-oss:120b';
 
-/** Default vision model: free on free-tier keys AND sees images (verified live). */
-export const OLLAMA_DEFAULT_VISION_MODEL = 'gemma4:31b';
+/** Default vision model: GLM-5.3-Flash multimodal on Ollama Cloud (verified). */
+export const OLLAMA_DEFAULT_VISION_MODEL = 'glm-5.3-flash';
 
 /** Longest user message sent. */
 export const OLLAMA_MAX_MESSAGE_CHARS = 1000;
@@ -24,6 +24,9 @@ export const OLLAMA_MAX_CONTEXT_CHARS = 1500;
 
 /** Cap on upstream chat bytes we will buffer. */
 export const OLLAMA_MAX_RESPONSE_BYTES = 32 * 1024;
+
+/** Shared chat-brain system-prompt budget (router prompt + vision addendum). */
+export const CHAT_SYSTEM_PROMPT_MAX_CHARS = 16000;
 
 /** System prompt: brief globe-assistant voice, grounded, honest. */
 export const OLLAMA_SYSTEM_PROMPT = [
@@ -84,7 +87,7 @@ export function cleanVisionImages(images) {
 export function buildOllamaChatRequest({ message, contextText = '', model, visionModel, system = '', images = null } = {}) {
   const text = String(message || '').trim().slice(0, OLLAMA_MAX_MESSAGE_CHARS);
   const ctx = String(contextText || '').trim().slice(0, OLLAMA_MAX_CONTEXT_CHARS);
-  const prompt = String(system || '').trim().slice(0, 2000) || OLLAMA_SYSTEM_PROMPT;
+  const prompt = String(system || '').trim().slice(0, CHAT_SYSTEM_PROMPT_MAX_CHARS) || OLLAMA_SYSTEM_PROMPT;
   const cleanedImages = cleanVisionImages(images);
   const resolvedModel = cleanedImages.length
     ? resolveOllamaVisionModel(visionModel)

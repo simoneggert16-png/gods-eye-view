@@ -109,7 +109,10 @@ export function createConversationLog({ storage = null } = {}) {
     },
     clear() {
       entries.length = 0;
-      persist();
+      try {
+        store?.removeItem?.(CONVERSATION_LOG_STORAGE_KEY);
+      } catch { /* storage clear best effort */ }
+      notify({ clear: true });
     },
     /** Subscribe to new entries. Returns an unsubscribe function. */
     subscribe(listener) {
@@ -131,6 +134,14 @@ export function mirrorToServer(log, { fetchImpl = null, endpoint = '/api/voice/l
   const doFetch = fetchImpl || (typeof fetch !== 'undefined' ? fetch.bind(globalThis) : null);
   if (!doFetch) return () => {};
   return log.subscribe((entry) => {
+    if (entry?.clear) {
+      try {
+        void doFetch(endpoint, {
+          method: 'DELETE',
+        })?.catch?.(() => {});
+      } catch { /* mirror is best effort */ }
+      return;
+    }
     try {
       void doFetch(endpoint, {
         method: 'POST',
@@ -216,7 +227,17 @@ export function attachConversationLog(ui, log, documentRef = null) {
         () => { copy.textContent = 'COPY FAILED'; },
       );
     });
-    header.append(caption, copy);
+
+    const clearBtn = doc2.createElement('button');
+    clearBtn.type = 'button';
+    clearBtn.className = 'gev-chat-clear';
+    clearBtn.textContent = 'CLEAR';
+    clearBtn.setAttribute('aria-label', 'Clear chat history');
+    clearBtn.addEventListener('click', () => {
+      log.clear();
+      list.innerHTML = '';
+    });
+    header.append(caption, copy, clearBtn);
     drawer.append(header);
 
     const list = doc2.createElement('ol');
@@ -224,6 +245,10 @@ export function attachConversationLog(ui, log, documentRef = null) {
     drawer.append(list);
 
     const renderEntry = (entry) => {
+      if (!entry || entry.clear) {
+        list.innerHTML = '';
+        return;
+      }
       const item = doc2.createElement('li');
       item.className = `gev-chat-entry gev-chat-${entry.who}`;
       const when = doc2.createElement('time');

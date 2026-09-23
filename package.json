@@ -31,7 +31,9 @@
     "openai-realtime",
     "visualization"
   ],
+  "main": "electron/main.cjs",
   "scripts": {
+    "app": "electron .",
     "doctor": "node scripts/setup-doctor.mjs",
     "dev": "vite",
     "dev:secure": "./scripts/dev-secure.sh",
@@ -51,6 +53,7 @@
     "satellite.js": "^6.0.2"
   },
   "devDependencies": {
+    "electron": "^44.0.0",
     "puppeteer": "^24.37.5",
     "qrcode": "^1.5.4",
     "sharp": "^0.34.5",

@@ -152,6 +152,11 @@ export function hardenCredentialFile(filepath, {
         ...environment,
         GEV_ACL_FILE: filepath,
         GEV_ACL_USER_SID: sid,
+        // Windows PowerShell must not inherit PS7/host-runner module paths.
+        // A polluted PSModulePath can redefine ACL types or fail to load the
+        // Security module, turning a correct DACL into a false negative.
+        // Restrict discovery to the native module directory beside powershell.exe.
+        PSModulePath: path.win32.join(path.win32.dirname(tools.powershell), 'Modules'),
       },
       stdio: 'ignore',
       windowsHide: true,

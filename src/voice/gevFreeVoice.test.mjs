@@ -511,16 +511,29 @@ test('typed chatter prefers Z.AI, then Ollama, then Gemini', async () => {
   assert.deepEqual(ol.calls, ['/api/zai/chat', '/api/ollama/chat']);
   assert.ok(olCase.seen.some(([who]) => who === 'ollama'));
 
+  const ab = brainFetch({
+    '/api/zai/chat': { status: 503, body: { code: 'ZAI_NOT_CONFIGURED' } },
+    '/api/ollama/chat': { status: 503, body: { code: 'OLLAMA_NOT_CONFIGURED' } },
+    '/api/abacus/chat': okAnswer('Abacus says hi.'),
+  });
+  const abCase = brainController(ab.fetchImpl);
+  const abResult = await abCase.controller.handleText('Tell me about Switzerland');
+  assert.equal(abResult.ok, true);
+  assert.equal(abResult.answer, 'Abacus says hi.');
+  assert.deepEqual(ab.calls, ['/api/zai/chat', '/api/ollama/chat', '/api/abacus/chat']);
+  assert.ok(abCase.seen.some(([who]) => who === 'abacus'));
+
   const gem = brainFetch({
     '/api/zai/chat': { status: 503, body: {} },
     '/api/ollama/chat': { status: 503, body: {} },
+    '/api/abacus/chat': { status: 503, body: {} },
     '/api/gemini/ask': okAnswer('Gemini says hi.'),
   });
   const gemCase = brainController(gem.fetchImpl);
   const gemResult = await gemCase.controller.handleText('Tell me about Hong Kong');
   assert.equal(gemResult.ok, true);
   assert.equal(gemResult.answer, 'Gemini says hi.');
-  assert.deepEqual(gem.calls, ['/api/zai/chat', '/api/ollama/chat', '/api/gemini/ask']);
+  assert.deepEqual(gem.calls, ['/api/zai/chat', '/api/ollama/chat', '/api/abacus/chat', '/api/gemini/ask']);
 });
 
 function routerFetch(answerText) {
@@ -642,14 +655,78 @@ test('indefinite show-me stages the layer instead of geocoding', () => {
   ]);
   const plane = parseFreeVoiceCommand('show me a plane');
   assert.deepEqual(plane.calls[1], { name: 'select_nearest_aircraft', args: { layerId: 'flights' } });
+  const satelliteTypo = parseFreeVoiceCommand('zeige mir einen sateliten');
+  assert.deepEqual(satelliteTypo.calls, [
+    { name: 'set_layer_visibility', args: { layerId: 'satellites', enabled: true } },
+    { name: 'track_entity', args: { query: 'satellite' } },
+  ]);
+  const satelliteDifferent = parseFreeVoiceCommand('zeige mir einen anderen satelliten');
+  assert.deepEqual(satelliteDifferent.calls, [
+    { name: 'set_layer_visibility', args: { layerId: 'satellites', enabled: true } },
+    { name: 'track_entity', args: { query: 'satellite', differentFromSelected: true } },
+  ]);
+  const japanAircraft = parseFreeVoiceCommand('zeig mir ein flugzeug über japan');
+  assert.deepEqual(japanAircraft.calls[1], {
+    name: 'select_nearest_aircraft',
+    args: { layerId: 'flights', locationQuery: 'japan' },
+  });
   const ship = parseFreeVoiceCommand('show me some ship');
   assert.deepEqual(ship.calls, [
     { name: 'set_layer_visibility', args: { layerId: 'ais-live-vessels', enabled: true } },
     { name: 'frame_overhead', args: { target: 'vessels' } },
   ]);
+  // Tactical / military layers: drone attacks & terror attacks stage layers instead of failing geocode
+  const drone = parseFreeVoiceCommand('zeige mir einen drohnenangriff');
+  assert.deepEqual(drone.calls, [
+    { name: 'set_layer_visibility', args: { layerId: 'drone-attacks', enabled: true } },
+    { name: 'fly_to_location', args: { latitude: 50.4501, longitude: 30.5234, viewMode: 'overview' } },
+  ]);
+  assert.ok(drone.speech.includes('Drohnenangriffe'));
+
+  const dronePlace = parseFreeVoiceCommand('zeige mir einen drohnenangriff in kiew');
+  assert.deepEqual(dronePlace.calls, [
+    { name: 'set_layer_visibility', args: { layerId: 'drone-attacks', enabled: true } },
+    { name: 'fly_to_location', args: { query: 'kiew' } },
+  ]);
+
+  const dronePlural = parseFreeVoiceCommand('zeig mir drohnenangriffe');
+  assert.deepEqual(dronePlural.calls, [
+    { name: 'set_layer_visibility', args: { layerId: 'drone-attacks', enabled: true } },
+    { name: 'fly_to_location', args: { latitude: 50.4501, longitude: 30.5234, viewMode: 'overview' } },
+  ]);
+
+  const terror = parseFreeVoiceCommand('zeige mir einen terroranschlag');
+  assert.deepEqual(terror.calls, [
+    { name: 'set_layer_visibility', args: { layerId: 'terror-attacks', enabled: true } },
+    { name: 'fly_to_location', args: { latitude: 55.8207, longitude: 37.3856, viewMode: 'overview' } },
+  ]);
+
   // Unknown nouns still fall through to geocode (AI retry gets its chance).
   const weird = parseFreeVoiceCommand('zeige mir epstein island');
   assert.equal(weird.calls[0].name, 'fly_to_location');
+});
+
+test('tactical free voice commands: impact zone, flight to target, and sitrep', () => {
+  // User complaint case: "Zoom noch mal rein und markiere das betroffene, also das vom Angriff betroffene Gebiet."
+  const impact = parseFreeVoiceCommand('Zoom noch mal rein und markiere das betroffene, also das vom Angriff betroffene Gebiet.');
+  assert.equal(impact.calls[0].name, 'mark_tactical_impact_zone');
+  assert.equal(impact.calls[0].args.zoomIn, true);
+  assert.ok(impact.speech.includes('Angriffsgebiet'));
+
+  // "markiere das betroffene Gebiet" without zoom
+  const impact2 = parseFreeVoiceCommand('markiere das betroffene Gebiet');
+  assert.equal(impact2.calls[0].name, 'mark_tactical_impact_zone');
+  assert.equal(impact2.calls[0].args.zoomIn, false);
+
+  // User complaint case: "fliege zu einem hin"
+  const flyNearest = parseFreeVoiceCommand('fliege zu einem hin');
+  assert.equal(flyNearest.calls[0].name, 'fly_to_nearest_tactical_target');
+  assert.ok(flyNearest.speech.includes('Einsatzziel'));
+
+  // User complaint case: "erzähl mir was drüber"
+  const describe = parseFreeVoiceCommand('erzähl mir was drüber');
+  assert.equal(describe.calls[0].name, 'describe_tactical_event');
+  assert.ok(describe.speech.includes('Lagebericht') || describe.speech.includes('Aufklärungsdaten'));
 });
 
 test('search verbs route entities to tracking, places to flying', () => {
@@ -671,6 +748,95 @@ test('search verbs route entities to tracking, places to flying', () => {
   const tokyo = parseFreeVoiceCommand('find Tokyo');
   assert.equal(tokyo.calls[0].name, 'fly_to_location');
   assert.equal(tokyo.calls[0].args.locationId || tokyo.calls[0].args.query, 'tokyo');
+});
+
+
+test('selected-object questions read the current selection before asking the brain', () => {
+  const result = parseFreeVoiceCommand('was nacht dieses flugzeug');
+  assert.deepEqual(result.calls, [
+    { name: 'get_entity_context', args: { scope: 'selected' } },
+  ]);
+  assert.match(result.speech, /Lese den ausgewählten Kontakt/);
+});
+
+test('nearest-aircraft chat calls keep explicit places and "another" follow-up state', async () => {
+  const answer = JSON.stringify({
+    name: 'select_nearest_aircraft',
+    args: { layerId: 'flights' },
+    say: 'Ich suche ein Flugzeug.',
+  });
+  const ran = [];
+  const controller = createFreeVoiceController({
+    announce: false,
+    ui: { detail: { textContent: '' } },
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ answer, blocked: false, error: null }),
+    }),
+    runner: async (name, args) => {
+      if (name === 'get_current_view_state' || name === 'get_entity_context') return { ok: true };
+      ran.push([name, args]);
+      return {
+        ok: true,
+        action: name,
+        location: 'Japan',
+        label: name === 'select_nearest_aircraft' ? 'TEST123' : null,
+      };
+    },
+    log: { push: () => {}, list: () => [] },
+  });
+
+  const first = await controller.handleChatText('zeig mir ein flugzeug über japan');
+  assert.equal(first.ok, true);
+  assert.equal(ran[0][1].locationQuery, 'japan');
+
+  await controller.handleChatText('ein anderes was sich bewegt');
+  assert.deepEqual(ran[1][1], {
+    layerId: 'flights',
+    differentFromSelected: true,
+    locationQuery: 'Japan',
+  });
+});
+
+
+test('selected-object context is narrated with concrete facts', async () => {
+  const answer = JSON.stringify({
+    name: 'get_entity_context',
+    args: { scope: 'selected' },
+    say: 'Ich prüfe das ausgewählte Flugzeug.',
+  });
+  const controller = createFreeVoiceController({
+    announce: false,
+    ui: { detail: { textContent: '' } },
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ answer, blocked: false, error: null }),
+    }),
+    runner: async () => ({
+      ok: true,
+      action: 'get_entity_context',
+      selected: {
+        name: 'ANA123',
+        properties: {
+          callsign: 'ANA123',
+          operator: 'All Nippon Airways',
+          type: 'Boeing 787',
+          routeOrigin: 'HND',
+          routeDestination: 'LAX',
+          altitudeM: 10500,
+        },
+      },
+    }),
+    log: { push: () => {}, list: () => [] },
+  });
+  const result = await controller.handleChatText('was nacht dieses flugzeug');
+  assert.equal(result.ok, true);
+  assert.match(result.speech, /ANA123/);
+  assert.match(result.speech, /All Nippon Airways/);
+  assert.match(result.speech, /Boeing 787/);
+  assert.match(result.speech, /HND–LAX/);
 });
 
 test('failed annotation gets one AI-corrected retry', async () => {
@@ -785,7 +951,7 @@ test('failed place flight with satellite words retries as tracking', async () =>
   const result = await controller.handleText('zeige mir SAT GUS');
   assert.equal(result.ok, true);
   assert.deepEqual(ran, [['fly_to_location', 'sat gus'], ['track_entity', 'sat gus']]);
-  assert.match(result.speech, /Verfolge|Tracking/);
+  assert.match(result.speech, /Verfolge SATGUS\.|Tracking SATGUS\./);
 });
 
 test('web_search chains one follow-up hop, then acts', async () => {
@@ -844,6 +1010,99 @@ test('web_search follow-up without a second call speaks the top hit', async () =
   const result = await controller.handleChatText('show me the tallest building in washington DC');
   assert.equal(result.ok, true);
   assert.match(result.speech, /Washington Monument/);
+});
+
+test('query_financial_market_impact chains follow-up to answer the user question using sitrep data', async () => {
+  const posted = [];
+  const logged = [];
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    posted.push(body.message || '');
+    if ((body.message || '').includes('Retrieved Real-Time Data from query_financial_market_impact')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          answer: 'Basierend auf den aktuellen Daten und Rüstungsaufträgen hat Rheinmetall (RHM) das höchste Ausbruchspotenzial für den 10. Oktober.',
+          blocked: false,
+          error: null,
+        }),
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        answer: '{"name": "query_financial_market_impact", "args": {"focus": "oktober prognose"}, "say": "Analysiere Finanzmärkte und aktuelle Ereignisse für den 10. Oktober."}',
+        blocked: false,
+        error: null,
+      }),
+    };
+  };
+  const ran = [];
+  const controller = createFreeVoiceController({
+    announce: false,
+    ui: { detail: { textContent: '' } },
+    fetchImpl,
+    runner: async (name, args) => {
+      if (name === 'get_current_view_state' || name === 'get_entity_context') return { ok: true };
+      ran.push(name);
+      if (name === 'query_financial_market_impact') {
+        return {
+          ok: true,
+          action: name,
+          sitrepDe: 'MARKT-LAGEBERICHT: DAX 18.900, Rheinmetall +3.4%, Lockheed +1.2%. Kausalität: Eskalation im Nahen Osten treibt Verteidigungswerte.',
+          sitrepEn: 'MARKET SITREP: DAX 18,900, Rheinmetall +3.4%, Lockheed +1.2%. Causality: Middle East escalation drives defense assets.',
+        };
+      }
+      return { ok: true, action: name };
+    },
+    log: { push: (who, text, calls) => logged.push({ who, text, calls }), list: () => logged },
+  });
+  const result = await controller.handleChatText('nach aktueller lage welche aktie wird am 10 oktober durch die decke gehen');
+  assert.equal(result.ok, true);
+  assert.deepEqual(ran, ['query_financial_market_impact']);
+  assert.ok(posted.some((m) => m.includes('Retrieved Real-Time Data from query_financial_market_impact')), 'sitrep data reached the follow-up hop');
+  assert.match(result.speech, /Rheinmetall.*Ausbruchspotenzial/);
+  assert.ok(logged.some((l) => l.who === 'ollama' && l.text.includes('Rheinmetall')), 'final answer was logged to the chat');
+});
+
+test('query_financial_market_impact returns sitrep speech when follow-up gives no answer', async () => {
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    if ((body.message || '').includes('Retrieved Real-Time Data')) {
+      return { ok: true, status: 200, json: async () => ({ answer: '', blocked: false, error: null }) };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        answer: '{"name": "query_financial_market_impact", "args": {"focus": "oktober prognose"}, "say": "Analysiere Finanzmärkte."}',
+        blocked: false,
+        error: null,
+      }),
+    };
+  };
+  const controller = createFreeVoiceController({
+    announce: false,
+    ui: { detail: { textContent: '' } },
+    fetchImpl,
+    runner: async (name) => {
+      if (name === 'get_current_view_state' || name === 'get_entity_context') return { ok: true };
+      if (name === 'query_financial_market_impact') {
+        return {
+          ok: true,
+          action: name,
+          sitrepDe: 'MARKT-LAGEBERICHT: DAX 18.900, RHM +3.4%.',
+        };
+      }
+      return { ok: true, action: name };
+    },
+    log: { push: () => {}, list: () => [] },
+  });
+  const result = await controller.handleChatText('welche aktie geht hoch');
+  assert.equal(result.ok, true);
+  assert.match(result.speech, /MARKT-LAGEBERICHT: DAX 18.900/);
 });
 
 test('failed regex command gets one AI reinterpretation, never a loop', async () => {
@@ -1462,6 +1721,35 @@ test('set_panel_open command parsing and speech synthesis in free voice', () => 
   assert.equal(openCctv.calls[0].name, 'set_panel_open');
   assert.deepEqual(openCctv.calls[0].args, { panelId: 'cctv-panel', open: true });
 });
+
+test('live-osint commands and news queries parse correctly', () => {
+  const newsCmd = parseFreeVoiceCommand('Gibt es neue Meldungen?');
+  assert.equal(newsCmd.calls[0].name, 'set_layer_visibility');
+  assert.equal(newsCmd.calls[0].args.layerId, 'live-osint');
+  assert.equal(newsCmd.calls[1].name, 'query_osint_news');
+  assert.match(newsCmd.speech, /Telegram OSINT/i);
+
+  const osintToggle = parseFreeVoiceCommand('Schalte OSINT ein');
+  assert.equal(osintToggle.calls[0].name, 'set_layer_visibility');
+  assert.equal(osintToggle.calls[0].args.layerId, 'live-osint');
+  assert.equal(osintToggle.calls[0].args.enabled, true);
+
+  const osintTopic = parseFreeVoiceCommand('Zeige mir Telegram News in Charkiw');
+  assert.equal(osintTopic.calls[0].name, 'set_layer_visibility');
+  assert.equal(osintTopic.calls[0].args.layerId, 'live-osint');
+  assert.equal(osintTopic.calls[1].name, 'query_osint_news');
+});
+
+test('analysis intent routes to brain as a question instead of unknown rejection', () => {
+  const q = parseFreeVoiceCommand('Analysiere die aktuelle Lage: Drone Activity: Kyiv. Ort: Kyiv, Ukraine. Details: Reaktive Drohnen.');
+  assert.ok(q.geminiQuestion);
+  assert.equal(Boolean(q.unknown), false);
+
+  const q2 = parseFreeVoiceCommand('Überwache die Drohnenaktivität über Odessa');
+  assert.ok(q2.geminiQuestion);
+  assert.equal(Boolean(q2.unknown), false);
+});
+
 
 
 

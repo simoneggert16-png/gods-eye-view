@@ -14,6 +14,19 @@ import bikeshareLayer from './data/bikeshare.js';
 import aisLiveVesselsLayer from './data/aisLiveVessels.js';
 import militaryInstallationsLayer from './data/militaryInstallations.js';
 import militaryAwarenessLayer from './data/militaryAwareness.js';
+import conflictsLayer from './data/conflictsLayer.js';
+import frontlinesLayer from './data/frontlinesLayer.js';
+import missileStrikesLayer from './data/missileStrikesLayer.js';
+import battlesLayer from './data/battlesLayer.js';
+import bombardmentsLayer from './data/bombardmentsLayer.js';
+import missileTestsLayer from './data/missileTestsLayer.js';
+import militaryConvoysLayer from './data/militaryConvoysLayer.js';
+import campaignTrailsLayer from './data/campaignTrailsLayer.js';
+import secretServiceLayer from './data/secretServiceLayer.js';
+import droneAttacksLayer from './data/droneAttacksLayer.js';
+import terrorAttacksLayer from './data/terrorAttacksLayer.js';
+import liveOsintLayer from './data/liveOsintLayer.js';
+import { initTacticalInspector } from './data/tacticalInspector.js';
 import localDataLayers from './data/localLayers.js';
 import { LAYER_STATE_REGISTRY } from './data/layerState.js';
 import { registerDataCredits } from './data/dataCredits.js';
@@ -35,6 +48,8 @@ import { initFirstRunExperience } from './firstRunExperience.js';
 import { initKeySetup } from './keySetup.js';
 import { loadPhotorealisticTileset } from './mapStartup.js';
 import { gatekeeper } from './pinGate.js';
+import { visitorTracker } from './telemetry/visitorTracker.js';
+import { initLiveMonitor, openLiveMonitor, toggleLiveMonitor } from './telemetry/liveMonitorModal.js';
 
 initLogoGaze();
 
@@ -160,9 +175,9 @@ async function init() {
     const tileset = photoreal.tileset;
     if (tileset) {
       // 3D Tiles crisp texture & streaming configuration:
-      // maximumScreenSpaceError = 16 ensures full-detail textures and sharp satellite imagery.
+      // maximumScreenSpaceError = 24 balances crisp satellite imagery with smooth, stutter-free 60 FPS in alpine terrain.
       // maximumMemoryUsage = 2048 MB gives ample cache for high-res orbital and street tiles.
-      tileset.maximumScreenSpaceError = 16;
+      tileset.maximumScreenSpaceError = 24;
       tileset.maximumMemoryUsage = 2048;
       viewer.scene.primitives.add(tileset);
       // NOTE: Cesium World Terrain intentionally disabled — conflicts with Google 3D Tiles at high zoom.
@@ -231,11 +246,24 @@ async function init() {
     dataManager.register(militaryInstallationsLayer);
     dataManager.register(militaryAwarenessLayer);
     militaryAwarenessLayer.attachDataManager(dataManager);
+    dataManager.register(conflictsLayer);
+    dataManager.register(frontlinesLayer);
+    dataManager.register(missileStrikesLayer);
+    dataManager.register(battlesLayer);
+    dataManager.register(bombardmentsLayer);
+    dataManager.register(missileTestsLayer);
+    dataManager.register(militaryConvoysLayer);
+    dataManager.register(campaignTrailsLayer);
+    dataManager.register(secretServiceLayer);
+    dataManager.register(droneAttacksLayer);
+    dataManager.register(terrorAttacksLayer);
+    dataManager.register(liveOsintLayer);
     for (const layer of localDataLayers) {
       dataManager.register(layer);
     }
     // Restoration starts only after the complete production registry is sealed.
     dataManager.finalizeRegistrations(LAYER_STATE_REGISTRY);
+    window.__gevDataManager = dataManager;
     if (import.meta.env.DEV) {
       window.__gevQaRegisterLayer = (targetManager, layerModule) => {
         if (targetManager !== dataManager) throw new Error('QA layer manager mismatch');
@@ -248,6 +276,7 @@ async function init() {
     }
     dataManager.buildTogglePanel(document.getElementById('data-toggles'));
     styleManager.attachDataManager(dataManager);
+    initTacticalInspector(viewer, dataManager);
 
     // Initialize deterministic scene playback for social clip capture
     const sceneDirector = new SceneDirector(viewer, styleManager, dataManager);
@@ -337,6 +366,11 @@ async function init() {
       requestRender: governorRequestRender,
     };
     window.__godsEyeView.voiceCommands = initGevVoiceCommands({ viewer, styleManager, dataManager, sceneDirector, annotations });
+    visitorTracker.init({ viewer, app: styleManager });
+    initLiveMonitor({ viewer, app: styleManager });
+    window.__godsEyeView.visitorTracker = visitorTracker;
+    window.__godsEyeView.openLiveMonitor = openLiveMonitor;
+    window.__godsEyeView.toggleLiveMonitor = toggleLiveMonitor;
 
   } catch (error) {
     console.error("God's Eye View initialization failed:", error);

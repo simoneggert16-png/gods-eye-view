@@ -90,6 +90,8 @@ export const WORLD_LANDMARKS = Object.freeze([
   { name: 'White House, Washington DC', lat: 38.8977, lon: -77.0365, kind: 'building', aliases: ['white house', 'weißes haus', 'weisses haus', 'weißes haus washington'] },
   { name: 'White House Helipad / Helikopter-Landeplatz', lat: 38.8967, lon: -77.0365, kind: 'place', aliases: ['white house helipad', 'helikopter landeplatz beim weissen haus', 'helikopter landeplatz weisses haus', 'hubschrauberlandeplatz weisses haus', 'white house south lawn helipad'] },
   { name: 'US Capitol, Washington DC', lat: 38.8897, lon: -77.0091, kind: 'building', aliases: ['us capitol', 'kapitol', 'kapitol washington', 'capitol hill'] },
+  { name: 'Texas State Capitol, Austin', lat: 30.2747, lon: -97.7404, kind: 'building', aliases: ['texas state capitol', 'texas capitol', 'kapitol austin', 'texas kapitol'] },
+  { name: 'Texas Capitol Underground Extension (Open-air Inverted Rotunda)', lat: 30.2755, lon: -97.7404, kind: 'building', aliases: ['texas capitol underground extension', 'capitol extension rotunda', 'loch im boden kapitol', 'loch im boden austin', 'loch am kapitol', 'inverted rotunda austin', 'capitol extension austin', 'unterirdische capitol extension'] },
   { name: 'Grand Canyon', lat: 36.1069, lon: -112.1129, kind: 'place', aliases: ['grand canyon'] },
   { name: 'Yellowstone Old Faithful', lat: 44.4605, lon: -110.8283, kind: 'place', aliases: ['old faithful', 'yellowstone', 'yellowstone nationalpark'] },
   { name: 'Mount Rushmore', lat: 43.8791, lon: -103.4591, kind: 'place', aliases: ['mount rushmore', 'rushmore'] },

@@ -30,6 +30,17 @@ import { stableActionKey } from './gevGemini.js';
 
 /** Tool-call layer ids, mirroring the set_layer_visibility enum. */
 const FREE_VOICE_LAYERS = Object.freeze([
+  ['drone-attacks', /\b(drone attacks?|drohnenangriff\w*|drohnenschl\w*|kamikaze[- ]?drohnen?|uav strikes?|drohnen)\b/],
+  ['terror-attacks', /\b(terror attacks?|terroranschl\w*|terrorismus|attentat\w*|terror)\b/],
+  ['missile-tests', /\b(missile tests?|raketentests?|waffentests?|icbm tests?|testgelände)\b/],
+  ['military-convoys', /\b(military convoys?|militärkonvois?|militär konvois?|truppenkonvois?|panzerkolonnen?|convoys?)\b/],
+  ['campaign-trails', /\b(campaign trails?|wahlkampf\w*|rallies|rallye?s?|wahlkampftour\w*)\b/],
+  ['secret-service', /\b(secret service|vip[- ]?schutz|motorcades?|tfr\b|flugverbotszone vip)\b/],
+  ['frontlines', /\b(frontlines?|frontlinien?|front\b|kampflinien?|contact lines?)\b/],
+  ['missile-strikes', /\b(missile strikes?|raketenschl\w*|raketenangriff\w*|raketenbeschuss)\b/],
+  ['battles', /\b(battles?|schlachten?|gefechte?|bodenk\w*|clashes?)\b/],
+  ['bombardments', /\b(bombardments?|bombardierung\w*|artillerie\w*|luftschl\w*|gleitbomben?|airstrikes?)\b/],
+  ['conflicts', /\b(conflicts?|konflikte?|krisengebiete?|kriegsgebiete?|crisis zones?)\b/],
   ['flights', /\b(flights?|flüg\w*|fluege|flugzeuge?|aircraft|planes?|flieger)\b/],
   ['military', /\b(military|militär|militar)\b/],
   ['satellites', /\b(satellites?|satelliten?|iss|starlink|orbit\w* objects?)\b/],
@@ -44,6 +55,7 @@ const FREE_VOICE_LAYERS = Object.freeze([
   ['local-datacenters', /\b(datacenters?|rechenzentr)\b/],
   ['local-dams', /\b(dams?|dämme|staudamm|staudämme)\b/],
   ['telegeography-submarine-cables', /\b(cables?|kabel|submarine|unterseekabel)\b/],
+  ['live-osint', /\b(osint|telegram\s*(?:feed|news)?|live\s*news|nachrichtenfeed)\b/],
 ]);
 
 /** Visual-style aliases → set_visual_style enum. */
@@ -90,7 +102,7 @@ const FREE_VOICE_PRESETS = Object.freeze({
 });
 
 /** German-only trigger marker: any of these matched → confirm in German. */
-const GERMAN_MARKER = /flieg|bring|mich|nach|zeige|mir|schalte|ein|aus|ansicht|über|nächste|stopp|allein|weg|hin|weltkugel|erdbeben|wärmebild|nachtsicht|kamera|flugzeug|schiff|feuer|verkehr|satellit|globus|öffne|schließe|schliess|kontroll/i;
+const GERMAN_MARKER = /flieg|bring|mich|nach|zeige|mir|schalte|ein|aus|ansicht|über|nächste|stopp|allein|weg|hin|weltkugel|erdbeben|wärmebild|nachtsicht|kamera|flugzeug|schiff|feuer|verkehr|satellit|satelit|globus|öffne|schließe|schliess|kontroll|welche|aktie|aktien|markt|märkte|kurs|kurse|prognose|analyse|lage|krieg|nachrichten|wieso|warum|wann|wo|wer|wie|nicht|heute|morgen/i;
 
 /**
  * Entity-family words: a search verb ("suche", "finde", "find") plus one of
@@ -128,6 +140,21 @@ function resolvePreset(text) {
   return null;
 }
 
+const TACTICAL_LAYER_FOCAL_POINTS = Object.freeze({
+  'drone-attacks': { latitude: 50.4501, longitude: 30.5234, viewMode: 'overview', labelEn: 'drone attacks, flying to Kyiv sector', labelDe: 'Drohnenangriffe, fliege zum Sektor Kiew' },
+  'terror-attacks': { latitude: 55.8207, longitude: 37.3856, viewMode: 'overview', labelEn: 'terror attacks, flying to Moscow sector', labelDe: 'Terroranschläge, fliege zum Schauplatz Moskau' },
+  'missile-strikes': { latitude: 32.6546, longitude: 51.6680, viewMode: 'overview', labelEn: 'missile strikes', labelDe: 'Raketenangriffe' },
+  'bombardments': { latitude: 50.2892, longitude: 36.9389, viewMode: 'overview', labelEn: 'bombardments and airstrikes', labelDe: 'Bombardements und Luftschläge' },
+  'battles': { latitude: 48.1367, longitude: 37.7492, viewMode: 'overview', labelEn: 'ground battle zones', labelDe: 'Bodenkampfzonen' },
+  'frontlines': { latitude: 48.0, longitude: 37.5, viewMode: 'overview', labelEn: 'frontlines', labelDe: 'Frontlinien' },
+  'conflicts': { latitude: 48.5, longitude: 36.5, viewMode: 'overview', labelEn: 'conflict zones', labelDe: 'Konfliktzonen' },
+  'military-convoys': { latitude: 54.0983, longitude: 22.9734, viewMode: 'overview', labelEn: 'military convoys in Suwalki corridor', labelDe: 'Militärkonvois im Suwalki-Korridor' },
+  'missile-tests': { latitude: 34.7420, longitude: -120.6107, viewMode: 'overview', labelEn: 'missile tests at Vandenberg test range', labelDe: 'Raketentests auf der Vandenberg Range' },
+  'campaign-trails': { latitude: 43.0451, longitude: -87.9172, viewMode: 'overview', labelEn: 'VIP campaign trails', labelDe: 'VIP-Wahlkampfrouten' },
+  'secret-service': { latitude: 30.2672, longitude: -97.7431, viewMode: 'overview', labelEn: 'Secret Service VIP security zone', labelDe: 'Secret Service VIP-Sicherheitszone' },
+  'live-osint': { latitude: 49.0, longitude: 33.0, viewMode: 'overview', labelEn: 'live OSINT news and dispatches', labelDe: 'Live-Telegram OSINT Meldungen' },
+});
+
 /** Trim filler words around a captured place name. */
 function cleanPlace(raw) {
   return String(raw || '')
@@ -137,6 +164,47 @@ function cleanPlace(raw) {
     .replace(/[?.!…,;]+$/, '')
     .trim()
     .slice(0, 160);
+}
+
+/**
+ * Extract the place from an indefinite entity phrase ("flugzeug über Japan").
+ * This is deliberately late in the sentence: entity words stay in the noun and
+ * only the trailing place becomes a geocode target.
+ */
+function extractEntityPhrasePlace(raw) {
+  const text = String(raw || '').trim();
+  const match = text.match(/(?:\b(?:over|above|near|in|at|bei)\s+|über\s+)(.{2,100})$/i);
+  return match ? cleanPlace(match[1]) : null;
+}
+
+function wantsDifferentEntity(raw) {
+  return /\b(?:anderes?|anderen|another|different|other|next|nächstes?)\b/i.test(String(raw || ''));
+}
+
+/**
+ * Close the model-argument gap: Ollama may understand "over Japan" or
+ * "another one" but still emit only {layerId}. Derive the missing place and
+ * different-selection flag from the user's own words before execution.
+ */
+function normalizeSelectNearestAircraftArgs(args, rawText, rememberedLocation = null) {
+  const out = { ...(args && typeof args === 'object' ? args : {}) };
+  const hasDestination = Boolean(
+    String(out.locationId || '').trim()
+    || String(out.locationQuery || '').trim()
+    || (Number.isFinite(Number(out.latitude)) && Number.isFinite(Number(out.longitude))),
+  );
+  const place = extractEntityPhrasePlace(rawText);
+  const different = wantsDifferentEntity(rawText);
+  if (!hasDestination && place) out.locationQuery = place;
+  if (different) out.differentFromSelected = true;
+  if (
+    different
+    && !place
+    && !String(out.locationId || '').trim()
+    && !String(out.locationQuery || '').trim()
+    && rememberedLocation
+  ) out.locationQuery = rememberedLocation;
+  return out;
 }
 
 /**
@@ -383,6 +451,12 @@ export function parseFreeVoiceCommand(input) {
     const m = text.match(/(?:zeig mir|zeige mir|show me|bring mir|gib mir|give me)\s+(?:mal\s+)?(?:irgendein(?:e|en)?|eine?|einen|a|an|any|some)\s+(.{2,60})/);
     if (m) {
       const noun = ` ${m[1].toLowerCase().trim()} `;
+      const place = extractEntityPhrasePlace(m[1]);
+      const aircraftArgs = (layerId) => ({
+        layerId,
+        ...(place ? { locationQuery: place } : {}),
+        ...(wantsDifferentEntity(text) ? { differentFromSelected: true } : {}),
+      });
       const pick = (layerId, extraCalls, speechEn, speechDe) => ({
         calls: [{ name: 'set_layer_visibility', args: { layerId, enabled: true } }, ...extraCalls],
         speech: say(speechEn, speechDe),
@@ -390,12 +464,12 @@ export function parseFreeVoiceCommand(input) {
       });
       if (/\bmilitär|\bmilitary|\bkampfjet|\bfighter/.test(noun)) {
         return pick('military',
-          [{ name: 'select_nearest_aircraft', args: { layerId: 'military' } }],
+          [{ name: 'select_nearest_aircraft', args: aircraftArgs('military') }],
           'Showing a military aircraft.', 'Zeige ein Militärflugzeug.');
       }
-      if (/\bflugzeug|\bflieger|\baircraft|\bplane|\bjet|\bhubschrauber|\bheli\b/.test(noun)) {
+      if (/\bflugzeug|\bflieger|\baircraft|\bplane|\bjet|\bhubschrauber|\bheli\b|\bwas sich bewegt|\bsomething moving\b/.test(noun)) {
         return pick('flights',
-          [{ name: 'select_nearest_aircraft', args: { layerId: 'flights' } }],
+          [{ name: 'select_nearest_aircraft', args: aircraftArgs('flights') }],
           'Showing an aircraft.', 'Zeige ein Flugzeug.');
       }
       if (/\bschiff|\bschiffe|\bships?|\bvessels?|\bboats?\b/.test(noun)) {
@@ -403,10 +477,18 @@ export function parseFreeVoiceCommand(input) {
           [{ name: 'frame_overhead', args: { target: 'vessels' } }],
           'Showing vessels.', 'Zeige Schiffe.');
       }
-      if (/\bsatellit|\bsatellite/.test(noun)) {
+      if (/\bsatellit|\bsatelit|\bsatellite/.test(noun)) {
         return pick('satellites',
-          [{ name: 'frame_overhead', args: { target: 'satellites' } }],
-          'Showing satellites.', 'Zeige Satelliten.');
+          [{
+            name: 'track_entity',
+            args: {
+              query: 'satellite',
+              // "zeige mir einen anderen Satelliten" — a follow-up must skip
+              // the currently followed contact, not re-pick it.
+              ...(wantsDifferentEntity(text) ? { differentFromSelected: true } : {}),
+            },
+          }],
+          'Showing the nearest satellite.', 'Zeige den nächsten Satelliten.');
       }
       if (/\bkamera|\bcamera/.test(noun)) {
         return {
@@ -425,9 +507,178 @@ export function parseFreeVoiceCommand(input) {
       if (/\berdbeben|\bearthquake|\bquake|\bbeben/.test(noun)) {
         return pick('earthquakes', [], 'Showing earthquakes.', 'Zeige Erdbeben.');
       }
+      if (/\bdrohn\w*|drone\w*|uav\b/.test(noun)) {
+        const flyArgs = place ? { query: place } : { latitude: 50.4501, longitude: 30.5234, viewMode: 'overview' };
+        return {
+          calls: [
+            { name: 'set_layer_visibility', args: { layerId: 'drone-attacks', enabled: true } },
+            { name: 'fly_to_location', args: flyArgs },
+          ],
+          speech: say(
+            place ? `Showing drone attacks in ${place}.` : 'Showing drone attacks, flying to Kyiv sector.',
+            place ? `Zeige Drohnenangriffe in ${place}.` : 'Zeige Drohnenangriffe, fliege zum Sektor Kiew.',
+          ),
+          lang,
+        };
+      }
+      if (/\bterror\w*|attentat\w*/.test(noun)) {
+        const flyArgs = place ? { query: place } : { latitude: 55.8207, longitude: 37.3856, viewMode: 'overview' };
+        return {
+          calls: [
+            { name: 'set_layer_visibility', args: { layerId: 'terror-attacks', enabled: true } },
+            { name: 'fly_to_location', args: flyArgs },
+          ],
+          speech: say(
+            place ? `Showing terror attacks in ${place}.` : 'Showing terror attacks, flying to Moscow sector.',
+            place ? `Zeige Terroranschläge in ${place}.` : 'Zeige Terroranschläge, fliege zum Schauplatz Moskau.',
+          ),
+          lang,
+        };
+      }
+      if (/\braketenangriff\w*|raketenschl\w*|missile\s*strike\w*/.test(noun)) {
+        const flyArgs = place ? { query: place } : { latitude: 32.6546, longitude: 51.6680, viewMode: 'overview' };
+        return {
+          calls: [
+            { name: 'set_layer_visibility', args: { layerId: 'missile-strikes', enabled: true } },
+            { name: 'fly_to_location', args: flyArgs },
+          ],
+          speech: say(
+            place ? `Showing missile strikes in ${place}.` : 'Showing missile strikes.',
+            place ? `Zeige Raketenangriffe in ${place}.` : 'Zeige Raketenangriffe.',
+          ),
+          lang,
+        };
+      }
+      if (/\bbombard\w*|luftschl\w*|gleitbombe\w*|airstrike\w*/.test(noun)) {
+        const flyArgs = place ? { query: place } : { latitude: 50.2892, longitude: 36.9389, viewMode: 'overview' };
+        return {
+          calls: [
+            { name: 'set_layer_visibility', args: { layerId: 'bombardments', enabled: true } },
+            { name: 'fly_to_location', args: flyArgs },
+          ],
+          speech: say(
+            place ? `Showing bombardments in ${place}.` : 'Showing bombardments and airstrikes.',
+            place ? `Zeige Bombardements in ${place}.` : 'Zeige Bombardements und Luftschläge.',
+          ),
+          lang,
+        };
+      }
+      if (/\bkonvoi\w*|convoys?\b|truppentransport\w*/.test(noun)) {
+        const flyArgs = place ? { query: place } : { latitude: 54.0983, longitude: 22.9734, viewMode: 'overview' };
+        return {
+          calls: [
+            { name: 'set_layer_visibility', args: { layerId: 'military-convoys', enabled: true } },
+            { name: 'fly_to_location', args: flyArgs },
+          ],
+          speech: say(
+            place ? `Showing military convoys in ${place}.` : 'Showing military convoys.',
+            place ? `Zeige Militärkonvois in ${place}.` : 'Zeige Militärkonvois.',
+          ),
+          lang,
+        };
+      }
+      if (/\braketentest\w*|missile\s*test\w*/.test(noun)) {
+        const flyArgs = place ? { query: place } : { latitude: 34.7420, longitude: -120.6107, viewMode: 'overview' };
+        return {
+          calls: [
+            { name: 'set_layer_visibility', args: { layerId: 'missile-tests', enabled: true } },
+            { name: 'fly_to_location', args: flyArgs },
+          ],
+          speech: say('Showing missile tests.', 'Zeige Raketentests.'),
+          lang,
+        };
+      }
+      if (/\bsecret\s*service\b|vip[- ]?schutz/.test(noun)) {
+        const flyArgs = place ? { query: place } : { latitude: 30.2672, longitude: -97.7431, viewMode: 'overview' };
+        return {
+          calls: [
+            { name: 'set_layer_visibility', args: { layerId: 'secret-service', enabled: true } },
+            { name: 'fly_to_location', args: flyArgs },
+          ],
+          speech: say('Showing Secret Service VIP security detail.', 'Zeige Secret Service VIP-Schutz.'),
+          lang,
+        };
+      }
+      if (/\bwahlkampf\w*|campaign\s*trail\w*/.test(noun)) {
+        const flyArgs = place ? { query: place } : { latitude: 43.0451, longitude: -87.9172, viewMode: 'overview' };
+        return {
+          calls: [
+            { name: 'set_layer_visibility', args: { layerId: 'campaign-trails', enabled: true } },
+            { name: 'fly_to_location', args: flyArgs },
+          ],
+          speech: say('Showing presidential campaign trails.', 'Zeige VIP-Wahlkampfrouten.'),
+          lang,
+        };
+      }
+      if (/\bbodenk\w*|schlacht\w*|gefecht\w*|battle\w*/.test(noun)) {
+        const flyArgs = place ? { query: place } : { latitude: 48.1367, longitude: 37.7492, viewMode: 'overview' };
+        return {
+          calls: [
+            { name: 'set_layer_visibility', args: { layerId: 'battles', enabled: true } },
+            { name: 'fly_to_location', args: flyArgs },
+          ],
+          speech: say(
+            place ? `Showing ground battles in ${place}.` : 'Showing ground battles.',
+            place ? `Zeige Bodenkämpfe in ${place}.` : 'Zeige Bodenkämpfe.',
+          ),
+          lang,
+        };
+      }
+      if (/\bfront\b|frontlin\w*|kampflin\w*/.test(noun)) {
+        const flyArgs = place ? { query: place } : { latitude: 48.0, longitude: 37.5, viewMode: 'overview' };
+        return {
+          calls: [
+            { name: 'set_layer_visibility', args: { layerId: 'frontlines', enabled: true } },
+            { name: 'fly_to_location', args: flyArgs },
+          ],
+          speech: say(
+            place ? `Showing frontline in ${place}.` : 'Showing frontlines.',
+            place ? `Zeige Frontlinie in ${place}.` : 'Zeige Frontlinien.',
+          ),
+          lang,
+        };
+      }
+      if (/\bkonflikt\w*|krisengebiet\w*|kriegsgebiet\w*|conflict\w*/.test(noun)) {
+        const flyArgs = place ? { query: place } : { latitude: 48.5, longitude: 36.5, viewMode: 'overview' };
+        return {
+          calls: [
+            { name: 'set_layer_visibility', args: { layerId: 'conflicts', enabled: true } },
+            { name: 'fly_to_location', args: flyArgs },
+          ],
+          speech: say('Showing conflict zones.', 'Zeige Konfliktzonen.'),
+          lang,
+        };
+      }
+      if (/\bosint\b|telegram\s*(?:feed|news)?|nachrichtenfeed/.test(noun)) {
+        const flyArgs = place ? { query: place } : { latitude: 49.0, longitude: 33.0, viewMode: 'overview' };
+        return {
+          calls: [
+            { name: 'set_layer_visibility', args: { layerId: 'live-osint', enabled: true } },
+            { name: 'query_osint_news', args: place ? { query: place } : {} },
+            { name: 'fly_to_location', args: flyArgs },
+          ],
+          speech: say(
+            place ? `Showing live OSINT dispatches for ${place}.` : 'Showing live Telegram OSINT feed.',
+            place ? `Zeige Live-OSINT Meldungen für ${place}.` : 'Zeige Live-Telegram OSINT Meldungen.',
+          ),
+          lang,
+        };
+      }
       // Unknown noun: fall through to fly_to_location (geocode attempt) —
       // the AI retry below still gets its chance on a miss.
     }
+  }
+
+  // --- Live OSINT & Breaking News ----------------------------------------
+  if (/\b(?:gibt es (?:neue|aktuelle) (?:meldungen|news|nachrichten)|was gibt es (?:neues|für news)|aktuelle (?:meldungen|news)|osint (?:news|meldungen)|telegram (?:news|meldungen|feed))\b/i.test(text)) {
+    return {
+      calls: [
+        { name: 'set_layer_visibility', args: { layerId: 'live-osint', enabled: true } },
+        { name: 'query_osint_news', args: {} },
+      ],
+      speech: say('Querying latest Telegram OSINT dispatches.', 'Rufe aktuelle Telegram OSINT-Meldungen ab.'),
+      lang,
+    };
   }
 
   // --- Fly to a place ----------------------------------------------------
@@ -446,6 +697,23 @@ export function parseFreeVoiceCommand(input) {
         return toBrain([], '');
       }
       const place = cleanPlace(m[1] || m[2]);
+      const tacticalLayerId = resolveLayerId(` ${place.toLowerCase()} `);
+      if (tacticalLayerId && TACTICAL_LAYER_FOCAL_POINTS[tacticalLayerId]) {
+        const placeIn = extractEntityPhrasePlace(place);
+        const focal = TACTICAL_LAYER_FOCAL_POINTS[tacticalLayerId];
+        const flyArgs = placeIn ? { query: placeIn } : { latitude: focal.latitude, longitude: focal.longitude, viewMode: focal.viewMode };
+        return {
+          calls: [
+            { name: 'set_layer_visibility', args: { layerId: tacticalLayerId, enabled: true } },
+            { name: 'fly_to_location', args: flyArgs },
+          ],
+          speech: say(
+            placeIn ? `Showing ${tacticalLayerId} in ${placeIn}.` : `Showing ${focal.labelEn}.`,
+            placeIn ? `Zeige ${tacticalLayerId} in ${placeIn}.` : `Zeige ${focal.labelDe}.`,
+          ),
+          lang,
+        };
+      }
       const preset = resolvePreset(` ${place.toLowerCase()} `);
       const args = preset ? { locationId: preset } : { query: place };
       if (place && hasReferenceWords(place)) {
@@ -662,6 +930,9 @@ export function parseFreeVoiceCommand(input) {
     if (/\bprevious\b|\bprev\b|vorherige/.test(text)) {
       return { calls: [{ name: 'control_cctv', args: { action: 'prev' } }], speech: say('Previous camera.', 'Vorherige Kamera.'), lang };
     }
+    if (/\b(?:analyze|analysiere|analysier|scanne|scan|was sieht|was ist zu sehen|prüfung|prüfe)\b/i.test(text)) {
+      return { calls: [{ name: 'control_cctv', args: { action: 'analyze' } }], speech: say('Analyzing camera view.', 'Analysiere Kamerabild.'), lang };
+    }
     const sel = text.match(/(?:select|choose|wähle|aktiviere)\s+(?:camera|kamera|cctv)\s+(.+)/i)
       || text.match(/(?:zeig(?:e)?\s+mir|show\s+me|find(?:e)?|öffne|open)\s+(?:eine\s+|a\s+)?(?:camera|kamera|cctv)\s+(?:bei|in|at|near|around|von)\s+(.+)/i)
       || text.match(/(?:camera|kamera|cctv)\s+(?:bei|in|at|near|around|von)\s+(.+)/i);
@@ -681,6 +952,11 @@ export function parseFreeVoiceCommand(input) {
       return { calls: [{ name: 'control_cctv', args: { action: layerOn ? 'enable' : 'disable' } }], speech: say(layerOn ? 'Cameras on.' : 'Cameras off.', layerOn ? 'Kameras ein.' : 'Kameras aus.'), lang };
     }
     return { calls: [{ name: 'control_cctv', args: { action: 'enable' } }], speech: say('Cameras on.', 'Kameras ein.'), lang };
+  }
+
+  // --- Clear chat history ---------------------------------------------------------
+  if (/\b(clear|reset|delete).*(chat|conversation|history)|(chat|chatverlauf|nachrichten)\s*(löschen|leeren|zurücksetzen)|lösche\s*(den)?\s*(gesamten)?\s*chat/.test(text)) {
+    return { calls: [{ name: 'clear_chat_history', args: {} }], speech: say('Chat history cleared.', 'Chatverlauf gelöscht.'), lang };
   }
 
   // --- Clear annotations ----------------------------------------------------------
@@ -724,10 +1000,45 @@ export function parseFreeVoiceCommand(input) {
     return { calls: [{ name: 'fly_route', args: {} }], speech: say('Flying the route.', 'Fliege die Route ab.'), lang };
   }
 
+  // --- Tactical: Mark affected / impact zone ("markiere das betroffene Gebiet") ---------
+  if (/\b(betroffene[ns]? gebiet|vom angriff betroffene|einschlags?gebiet|einschlags?zone|impact zone|affected area|angriffsgebiet)\b/i.test(text)) {
+    const zoomIn = /\b(zoom|näher|ran|rein)\b/i.test(text);
+    return {
+      calls: [{ name: 'mark_tactical_impact_zone', args: { zoomIn } }],
+      speech: say(
+        zoomIn ? 'Zooming in and marking the affected strike zone.' : 'Marking the affected strike zone.',
+        zoomIn ? 'Zoome heran und markiere das betroffene Angriffsgebiet.' : 'Markiere das betroffene Angriffsgebiet.'
+      ),
+      lang,
+    };
+  }
+
+  // --- Tactical: Fly to attack / target ("fliege zu einem hin") --------------------------
+  if (/\b(fliege?|bring mich|gehe?|jump|fly|go)\s+(zu\s+einem|zu\s+einer|hin|dort\s+hin|to\s+one|to\s+a\s+strike|to\s+a\s+target)\b/i.test(text)
+    || /\b(fliege?\s+zu\s+einem\s+hin)\b/i.test(text)
+    || /\b(zeig(e)?\s+mir\s+einen\s+(drohnenangriff|raketenangriff|anschlag))\b/i.test(text)) {
+    const isDrone = /\b(drohne|uav|drone)\b/i.test(text);
+    const category = isDrone ? 'drone-attacks' : undefined;
+    return {
+      calls: [{ name: 'fly_to_nearest_tactical_target', args: category ? { category } : {} }],
+      speech: say('Flying to tactical target.', 'Fliege zum nächsten Einsatzziel.'),
+      lang,
+    };
+  }
+
+  // --- Tactical: Describe event / intel ("erzähl mir was drüber") -------------------------
+  if (/\b(erzähl(e)?\s+mir\s+(was|mehr)\s+drüber|was\s+ist\s+hier\s+passiert|beschreibe?\s+(den|das)?\s*(angriff|ereignis|vorfall)|tell\s+me\s+about\s+(this|the\s+attack)|what\s+happened\s+here)\b/i.test(text)) {
+    return {
+      calls: [{ name: 'describe_tactical_event', args: {} }],
+      speech: say('Querying tactical intelligence for this location.', 'Rufe Lagebericht und Aufklärungsdaten für diesen Sektor ab.'),
+      lang,
+    };
+  }
+
   // --- Annotate: outline / mark ---------------------------------------------------------
   {
     const m = text.match(/(?:outline|outlines|draw the|draw|annotate|mark|markiere|zeichne|umrande|umranden|umriss|grenze von|grenzen von|highlight)\s+(?:the\s+|der\s+|die\s+|das\s+|state of\s+|bundesstaat\s+)?(.{2,120})/);
-    if (m && !/route|arrow|distance|entfernung/.test(text)) {
+    if (m && !/route|arrow|distance|entfernung|betroffene|einschlags?zone|einschlags?gebiet|angriffsgebiet/.test(text)) {
       const target = cleanPlace(m[1]);
       const isBoundary = /\b(state of|bundesstaat|outline|umriss|umrisse|umrande|umranden|grenze|grenzen|boundary|border|einzeichnen)\b/i.test(text)
         || /\bzeichne\b.*\bein\b/i.test(text);
@@ -848,6 +1159,17 @@ export function parseFreeVoiceCommand(input) {
     };
   }
 
+  // --- Selected object questions -------------------------------------------
+  // Typo-tolerant German/English forms ("was macht/nacht dieses Flugzeug")
+  // must read the live selection before the general chat-brain path.
+  if (/\b(?:was\s+(?:ist|macht|nacht)|what\s+(?:is|does))\b.*\b(?:das|dieses?|this|that)\b.*\b(?:flugzeug|aircraft|plane|satellit|satelit|satellite|schiff|ship|vessel)\b/i.test(text)) {
+    return {
+      calls: [{ name: 'get_entity_context', args: { scope: 'selected' } }],
+      speech: say('Reading the selected object.', 'Lese den ausgewählten Kontakt.'),
+      lang,
+    };
+  }
+
   // --- Open questions → free cloud brain (Gemini free tier, optional) ---------
   // Anything question-shaped that no command or analyst pattern claimed goes
   // to the chat-brain chain. Gibberish without question markers stays unknown
@@ -855,7 +1177,7 @@ export function parseFreeVoiceCommand(input) {
   // asks are chat, even as statements (the text box is a chat surface).
   // NOTE: `text` is space-padded, so start-anchored (^) patterns never match
   // here — use (?:^|\s) for leading words.
-  if (/\?|(?:^|\s)(who|what|when|where|why|how|which|wer|was|wo|wann|warum|wieso|weshalb|weswegen|wozu|worum|woran|worüber|womit|wie|welche[rnsm]?|tell me|erzähle? mir|explain|erkläre?|sag mir|zeig mir)\b/.test(text)) {
+  if (/\?|(?:^|\s)(who|what|when|where|why|how|which|wer|was|wo|wann|warum|wieso|weshalb|weswegen|wozu|worum|woran|worüber|womit|wie|welche[rnsm]?|tell me|erzähle? mir|explain|erkläre?|sag mir|zeig mir|analysiere?|überwache?|beobachte?|beurteile?|untersuche?|prüfe?|analyze|monitor|assess|evaluate)\b/i.test(text)) {
     return { calls: [], geminiQuestion: raw, speech: '', lang };
   }
 
@@ -1128,6 +1450,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     recognition: null,
     lastHeard: '',
     lastResult: null,
+    lastNearestAircraftLocation: null,
   };
 
   const setDetail = (text) => {
@@ -1309,16 +1632,72 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     return state.lastResult;
   }
 
+  async function chainDataFollowUp(endpoint, brainWho, originalText, toolName, dataText, lang = 'en', opts = {}) {
+    const de = lang === 'de';
+    const message = `The user asked: "${String(originalText || '').slice(0, 400)}"\n\nRetrieved Real-Time Data from ${toolName}:\n${String(dataText || '').slice(0, 2200)}\n\nPlease provide a direct, insightful, and comprehensive answer to the user's specific question based on this analytical data.`;
+    const system = de
+      ? "Du bist der analytische Militär- und Finanz-Supercomputer von God's Eye View. Fasse die bereitgestellten Echtzeit-Modellanalysen und Prognosen (Top-Ausbruchskandidaten, Kursziele, Kausalitäten und Katalysatoren) direkt, präzise und fundiert auf Deutsch für den Nutzer zusammen. Nenne konkret die prognostizierten Spitzenreiter und deren Wachstumstreiber. Gib keine Standard-Haftungsausschlüsse oder Verweigerungen aus."
+      : "You are the analytical supercomputer of God's Eye View. Synthesize the provided real-time model forecasts (top breakout stocks, price targets, causalities, and catalysts) directly and concisely for the user. Explicitly name the top candidates and their growth drivers without standard financial disclaimers.";
+
+    let answer = null;
+    try {
+      const response = await doFetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, system }),
+        signal: AbortSignal.timeout(12000),
+      });
+      if (response && response.status !== 503) {
+        const data = await response?.json?.().catch(() => null);
+        const rawAns = data?.answer || '';
+        const cleaned = extractDirectAnswer(rawAns);
+        const isRefusal = /(?:tut mir leid|kann leider|kann ich leider nicht|keine anlageberatung|über keine glaskugel|nicht möglich|sorry|cannot predict|unable to predict)/i.test(cleaned || rawAns || '');
+        if (!isRefusal && cleaned && !cleaned.startsWith('{') && !cleaned.startsWith('[')) {
+          answer = cleaned;
+        } else if (!isRefusal && typeof rawAns === 'string' && rawAns.trim().length > 10 && !rawAns.trim().startsWith('{')) {
+          answer = rawAns.trim();
+        }
+      }
+    } catch {
+      answer = null;
+    }
+
+    if (answer) {
+      logTurn(brainWho, answer);
+      state.lastResult = { ok: true, speech: answer, answer };
+      setDetail(answer);
+      if (!opts?.silent) speak(answer, lang);
+      return state.lastResult;
+    }
+    return null;
+  }
+
   /**
-   * After a brain-routed web_search executed with results, give the same
-   * brain its one follow-up hop. Returns the chained result, or null when
-   * no chaining applies (caller returns the first result as-is).
+   * After a brain-routed search or data retrieval tool executed with results,
+   * give the same brain a follow-up hop to synthesize the answer for the user.
+   * Returns the chained result, or null when no chaining applies.
    */
-  async function maybeChainWebSearch(endpoint, brainWho, originalText, routedName, firstResult, lang = 'en', opts = {}) {
-    if (routedName !== 'web_search' || !doFetch) return null;
-    const wsOutcome = firstResult?.outcomes?.[0];
-    if (!wsOutcome?.ok || !Array.isArray(wsOutcome.result?.results) || !wsOutcome.result.results.length) return null;
-    return chainWebSearchFollowUp(endpoint, brainWho, originalText, wsOutcome.result, lang, opts);
+  async function maybeChainFollowUp(endpoint, brainWho, originalText, routedName, firstResult, lang = 'en', opts = {}) {
+    if (!doFetch) return null;
+    if (routedName === 'web_search') {
+      const wsOutcome = firstResult?.outcomes?.[0];
+      if (!wsOutcome?.ok || !Array.isArray(wsOutcome.result?.results) || !wsOutcome.result.results.length) return null;
+      return chainWebSearchFollowUp(endpoint, brainWho, originalText, wsOutcome.result, lang, opts);
+    }
+    if (
+      routedName === 'query_financial_market_impact' ||
+      routedName === 'search_and_forecast_asset' ||
+      routedName === 'query_osint_news' ||
+      routedName === 'describe_tactical_event'
+    ) {
+      const outcome = firstResult?.outcomes?.[0];
+      if (!outcome?.ok) return null;
+      const res = outcome.result;
+      const sitrep = res?.sitrepDe || res?.sitrepEn || res?.summary;
+      if (!sitrep) return null;
+      return chainDataFollowUp(endpoint, brainWho, originalText, routedName, sitrep, lang, opts);
+    }
+    return null;
   }
 
   /**
@@ -1336,6 +1715,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     for (const brain of [
       { endpoint: '/api/zai/chat', who: 'zai' },
       { endpoint: '/api/ollama/chat', who: 'ollama' },
+      { endpoint: '/api/abacus/chat', who: 'abacus' },
     ]) {
       const attempt = await askChatBrain({ ...brain, lang, message: question, context, image, opts });
       if (attempt.handled) return attempt.result;
@@ -1355,6 +1735,41 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     const text = String(rawText || '').trim().slice(0, 500);
     if (!text) return null;
     const lang = GERMAN_MARKER.test(text) ? 'de' : 'en';
+
+    // Direct Live Monitor command intercept
+    const trimmed = text.trim().toLowerCase();
+    if (
+      /^((\/)?monitor|live\s*monitor|besucher(\s*monitor)?|wer\s+ist\s+online|wer\s+besucht(\s+meine\s+website)?|surveillance|visitor\s*monitor)$/i.test(trimmed) ||
+      trimmed.includes('besucher monitor') ||
+      trimmed.includes('live monitor')
+    ) {
+      state.lastHeard = text;
+      logTurn('you', text);
+      const msg = lang === 'de' ? 'Öffne Live Besucher- & Telemetrie-Monitor.' : 'Opening Live Visitor Surveillance Monitor.';
+      setDetail(msg);
+      logTurn('app', msg);
+      state.lastResult = { ok: true, speech: msg, answer: msg };
+      if (typeof window.__godsEyeView?.openLiveMonitor === 'function') {
+        window.__godsEyeView.openLiveMonitor();
+      }
+      return state.lastResult;
+    }
+
+    // Direct clear chat command intercept
+    if (
+      /^((\/)?clear(\s*chat)?|chatverlauf\s*löschen|lösche\s*(den)?\s*(gesamten)?\s*chatverlauf|chat\s*leeren|verlauf\s*löschen|clear)$/i.test(trimmed) ||
+      trimmed.includes('chatverlauf löschen') ||
+      trimmed.includes('lösche den gesamten chatverlauf') ||
+      trimmed.includes('lösche den chatverlauf') ||
+      trimmed.includes('chat leeren')
+    ) {
+      log?.clear?.();
+      const msg = lang === 'de' ? 'Chatverlauf gelöscht.' : 'Chat history cleared.';
+      setDetail(msg);
+      state.lastResult = { ok: true, speech: msg, answer: msg };
+      return state.lastResult;
+    }
+
     state.lastHeard = text;
     logTurn('you', text);
     let history = [];
@@ -1373,6 +1788,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     if (doFetch) {
       for (const brain of [
         { endpoint: '/api/ollama/chat', who: 'ollama' },
+        { endpoint: '/api/abacus/chat', who: 'abacus' },
         { endpoint: '/api/zai/chat', who: 'zai' },
       ]) {
         let response = null;
@@ -1387,10 +1803,17 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
         } catch {
           response = null;
         }
-        if (response && response.status !== 503) {
+        if (response && response.ok) {
           const data = await response?.json?.().catch(() => null);
           const routed = extractRouterCall(data?.answer);
           if (routed && routed.name && isCompleteRouterCall(routed.name, routed.args)) {
+            if (routed.name === 'select_nearest_aircraft') {
+              routed.args = normalizeSelectNearestAircraftArgs(
+                routed.args,
+                text,
+                state.lastNearestAircraftLocation,
+              );
+            }
             const say = routed.say || synthRouterSay(routed.name, routed.args, lang);
             logTurn(brain.who, say);
             const first = await executeCalls(
@@ -1399,7 +1822,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
               lang,
               { routed: true, silent: true },
             );
-            return (await maybeChainWebSearch(brain.endpoint, brain.who, text, routed.name, first, lang, { silent: true })) || first;
+            return (await maybeChainFollowUp(brain.endpoint, brain.who, text, routed.name, first, lang, { silent: true })) || first;
           }
           // Degenerate pseudo-format ("fly_to_location {...}", bare tool +
           // JSON): synthesize the call with a clean confirmation instead of
@@ -1414,7 +1837,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
               lang,
               { routed: true, silent: true },
             );
-            return (await maybeChainWebSearch(brain.endpoint, brain.who, text, degenerate.name, first, lang, { silent: true })) || first;
+            return (await maybeChainFollowUp(brain.endpoint, brain.who, text, degenerate.name, first, lang, { silent: true })) || first;
           }
           // Direct answers to questions (visual phenomena, geography, colors, etc.) from the model.
           const direct = extractDirectAnswer(data?.answer);
@@ -1532,6 +1955,27 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
   }
 
   async function handleText(rawText) {
+    const text = String(rawText || '').trim();
+    const trimmed = text.toLowerCase();
+    if (
+      /^((\/)?monitor|live\s*monitor|besucher(\s*monitor)?|wer\s+ist\s+online|wer\s+besucht(\s+meine\s+website)?|surveillance|visitor\s*monitor)$/i.test(trimmed) ||
+      trimmed.includes('besucher monitor') ||
+      trimmed.includes('live monitor')
+    ) {
+      const lang = GERMAN_MARKER.test(text) ? 'de' : 'en';
+      state.lastHeard = text;
+      logTurn('you', text);
+      const spoken = lang === 'de' ? 'Öffne Live Besucher- und Telemetrie-Monitor.' : 'Opening Live Visitor Surveillance Monitor.';
+      state.lastResult = { ok: true, speech: spoken, answer: spoken };
+      setDetail(spoken);
+      speak(spoken, lang);
+      logTurn('app', spoken);
+      if (typeof window.__godsEyeView?.openLiveMonitor === 'function') {
+        window.__godsEyeView.openLiveMonitor();
+      }
+      return state.lastResult;
+    }
+
     const parsed = parseFreeVoiceCommand(rawText);
     state.lastHeard = String(rawText || '');
     logTurn('you', state.lastHeard);
@@ -1576,7 +2020,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     } catch { /* route without history */ }
     const scene = await readContextText();
     const message = buildPlaceFixMessage(originalQuery, history, scene);
-    for (const endpoint of ['/api/zai/chat', '/api/ollama/chat']) {
+    for (const endpoint of ['/api/zai/chat', '/api/ollama/chat', '/api/abacus/chat']) {
       let response = null;
       try {
         response = await doFetch(endpoint, {
@@ -1629,7 +2073,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     } catch { /* route without history */ }
     const scene = await readContextText();
     const message = buildPlaceFixMessage(originalTarget, history, scene);
-    for (const endpoint of ['/api/zai/chat', '/api/ollama/chat']) {
+    for (const endpoint of ['/api/zai/chat', '/api/ollama/chat', '/api/abacus/chat']) {
       let response = null;
       try {
         response = await doFetch(endpoint, {
@@ -1672,9 +2116,82 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
   /** Run tool calls through the runner with speech + log + detail. Shared by
    *  the regex path and the AI router path below. opts.rawText enables the AI
    *  second chance below; opts.routed marks brain-originated calls (no loop). */
+  /**
+   * Successful APP chat lines should add concrete result truth, not merely
+   * repeat the brain's intent. Tracking is the highest-value case because the
+   * runner knows the resolved callsign/registration/satellite name.
+   */
+  function successfulOutcomeSpeech(outcomes, fallback, lang = 'en') {
+    if (outcomes.length !== 1 || outcomes[0]?.ok !== true) return fallback;
+    const result = outcomes[0]?.result;
+    const label = String(result?.label || '').trim();
+    if (outcomes[0].name === 'track_entity' && label) {
+      return lang === 'de' ? `Verfolge ${label}.` : `Tracking ${label}.`;
+    }
+    if (outcomes[0].name === 'select_nearest_aircraft' && label) {
+      return lang === 'de' ? `Verfolge ${label}.` : `Tracking ${label}.`;
+    }
+    if (outcomes[0].name === 'get_entity_context') {
+      const selected = result?.selected || null;
+      if (!selected) {
+        return lang === 'de'
+          ? 'Aktuell ist kein Objekt ausgewählt.'
+          : 'No object is currently selected.';
+      }
+      const props = selected.properties || {};
+      const clean = (value) => String(value ?? '').trim();
+      const name = clean(selected.name || props.name || props.callsign) || 'Kontakt';
+      const parts = [];
+      const operator = clean(props.operator || props.owner);
+      const type = clean(props.type || props.aircraftClass || props.model);
+      const route = clean(props.route);
+      const origin = clean(props.routeOrigin || props.origin);
+      const destination = clean(props.routeDestination || props.destination);
+      if (operator) parts.push(operator);
+      if (type) parts.push(type);
+      if (route) parts.push(route);
+      else if (origin && destination) parts.push(`${origin}–${destination}`);
+      const altitude = Number(props.altitudeM ?? selected.altitudeM);
+      if (Number.isFinite(altitude) && altitude > 0) parts.push(`${Math.round(altitude).toLocaleString('de-DE')} m`);
+      return lang === 'de'
+        ? `Ausgewählt: ${name}${parts.length ? ` — ${parts.join(' · ')}` : ''}.`
+        : `Selected: ${name}${parts.length ? ` — ${parts.join(' · ')}` : ''}.`;
+    }
+    if (
+      outcomes[0].name === 'describe_tactical_event' ||
+      outcomes[0].name === 'query_financial_market_impact' ||
+      outcomes[0].name === 'search_and_forecast_asset' ||
+      outcomes[0].name === 'query_osint_news' ||
+      result?.sitrepDe ||
+      result?.sitrepEn
+    ) {
+      const text = lang === 'de'
+        ? (result?.sitrepDe || result?.sitrepEn || result?.summary)
+        : (result?.sitrepEn || result?.sitrepDe || result?.summary);
+      if (text) return text;
+    }
+    if (outcomes[0].name === 'fly_to_nearest_tactical_target' && result?.target) {
+      return lang === 'de'
+        ? `Fliege zum Einsatzziel: ${result.target}.`
+        : `Flying to tactical target: ${result.target}.`;
+    }
+    if (outcomes[0].name === 'mark_tactical_impact_zone') {
+      const markLabel = result?.label || (lang === 'de' ? 'Angriffsgebiet' : 'Impact zone');
+      return lang === 'de'
+        ? `${result?.zoomedIn ? 'Herangezoomt und ' : ''}${markLabel} auf der Karte markiert.`
+        : `${result?.zoomedIn ? 'Zoomed in and marked ' : 'Marked '}${markLabel} on the map.`;
+    }
+    return fallback;
+  }
+
   async function executeCalls(calls, speech, lang = 'en', opts = {}) {
     const outcomes = [];
     for (const call of calls || []) {
+      if (call?.name === 'clear_chat_history') {
+        try { log?.clear?.(); } catch { /* best effort */ }
+        outcomes.push({ name: call.name, ok: true, result: { ok: true, action: 'clear_chat_history' } });
+        continue;
+      }
       try {
         const result = await runner(call.name, call.args || {});
         outcomes.push({ name: call.name, ok: result?.ok !== false, result });
@@ -1682,6 +2199,13 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
         outcomes.push({ name: call.name, ok: false, error: error?.message || String(error) });
       }
     }
+    const nearestSuccess = outcomes.find((outcome) => (
+      outcome?.name === 'select_nearest_aircraft'
+      && outcome?.ok === true
+      && outcome?.result?.location
+    ));
+    if (nearestSuccess) state.lastNearestAircraftLocation = nearestSuccess.result.location;
+
     // AI second chance: a lone fly_to_location that found nothing gets one
     // brain-corrected retry (typos like "shenzen", pronouns) instead of a
     // dead end. Falls through to the general reinterpretation below when the
@@ -1704,7 +2228,8 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       try {
         const result = await runner('track_entity', { query: entityQuery });
         if (result?.ok !== false) {
-          const speech = lang === 'de' ? `Verfolge ${entityQuery}.` : `Tracking ${entityQuery}.`;
+          const resolvedLabel = String(result.label || entityQuery).trim();
+          const speech = lang === 'de' ? `Verfolge ${resolvedLabel}.` : `Tracking ${resolvedLabel}.`;
           state.lastResult = { ok: true, speech, outcomes: [{ name: 'track_entity', ok: true, result }], retriedFrom: entityQuery };
           setDetail(speech);
           if (!opts.silent) speak(speech, lang);
@@ -1739,7 +2264,9 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     const firstError = failed.length ? (failed[0].error || failed[0].result?.error || 'unknown error') : '';
     const spoken = failed.length && outcomes.length > 1
       ? `${speech} (${failed.length} of ${outcomes.length} failed.)`
-      : (failed.length ? (lang === 'de' ? 'Das hat leider nicht geklappt.' : `That did not work: ${firstError}.`) : speech);
+      : (failed.length
+        ? (lang === 'de' ? 'Das hat leider nicht geklappt.' : `That did not work: ${firstError}.`)
+        : successfulOutcomeSpeech(outcomes, speech, lang));
     state.lastResult = { ok: !failed.length, speech: spoken, outcomes };
     setDetail(spoken);
     if (!opts.silent) speak(spoken, lang);
@@ -1768,7 +2295,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     const scene = await readContextText();
     const message = buildRouterMessage(rawText, history, scene);
     const excluded = new Set((excludeCalls || []).map((call) => stableActionKey(call?.name, call?.args)));
-    for (const endpoint of ['/api/zai/chat', '/api/ollama/chat']) {
+    for (const endpoint of ['/api/zai/chat', '/api/ollama/chat', '/api/abacus/chat']) {
       let response = null;
       try {
         response = await doFetch(endpoint, {
@@ -1784,10 +2311,18 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       const routed = extractRouterCall(data?.answer);
       if (!routed || routed.unknown) continue; // chit-chat stays honest, next brain may still map it
       if (!routed.name || !isCompleteRouterCall(routed.name, routed.args)) continue; // empty-args envelope
+      if (routed.name === 'select_nearest_aircraft') {
+        routed.args = normalizeSelectNearestAircraftArgs(
+          routed.args,
+          rawText,
+          state.lastNearestAircraftLocation,
+        );
+      }
       if (excluded.has(stableActionKey(routed.name, routed.args))) continue; // never loop the same dead call
       const say = routed.say || synthRouterSay(routed.name, routed.args, lang);
       const first = await executeCalls([{ name: routed.name, args: routed.args }], say, lang, { routed: true, silent: opts?.silent });
-      const chained = await maybeChainWebSearch(endpoint, endpoint.includes('/zai/') ? 'zai' : 'ollama', rawText, routed.name, first, lang, opts);
+      const brainWho = endpoint.includes('/zai/') ? 'zai' : (endpoint.includes('/abacus/') ? 'abacus' : 'ollama');
+      const chained = await maybeChainFollowUp(endpoint, brainWho, rawText, routed.name, first, lang, opts);
       return chained || first;
     }
     return null;

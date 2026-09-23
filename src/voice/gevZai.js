@@ -43,7 +43,7 @@ export function resolveZaiModel(configured) {
   return isValidZaiModel(id) ? id : ZAI_DEFAULT_MODEL;
 }
 
-import { cleanVisionImages } from './gevOllama.js';
+import { CHAT_SYSTEM_PROMPT_MAX_CHARS, cleanVisionImages } from './gevOllama.js';
 
 /**
  * Build the chat request (key attached server-side). Supports vision screenshots.
@@ -59,7 +59,7 @@ import { cleanVisionImages } from './gevOllama.js';
 export function buildZaiChatRequest({ message, contextText = '', model, system = '', images = null } = {}) {
   const text = String(message || '').trim().slice(0, ZAI_MAX_MESSAGE_CHARS);
   const ctx = String(contextText || '').trim().slice(0, ZAI_MAX_CONTEXT_CHARS);
-  const prompt = String(system || '').trim().slice(0, 2000) || ZAI_SYSTEM_PROMPT;
+  const prompt = String(system || '').trim().slice(0, CHAT_SYSTEM_PROMPT_MAX_CHARS) || ZAI_SYSTEM_PROMPT;
   const promptText = ctx ? `Live scene context:\n${ctx}\n\nQuestion: ${text}` : text;
   const cleanedImages = cleanVisionImages(images);
   const userContent = cleanedImages.length

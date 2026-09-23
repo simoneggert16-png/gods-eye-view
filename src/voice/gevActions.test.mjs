@@ -19,6 +19,11 @@ import {
   knownRadioLocation,
   normalizeStackId,
   parseLatLonQuery,
+  nearbyTacticalIntel,
+  generateCircleRing,
+  flyToNearestTacticalTarget,
+  markTacticalImpactZone,
+  describeTacticalEvent,
 } from './gevActions.js';
 import { MAP_STACKS } from '../mapStackController.js';
 import { readFileSync } from 'node:fs';
@@ -99,6 +104,206 @@ test('track_entity runner narrates a callsign-less aircraft by its registration'
     );
     assert.equal(trackedId, 'ae1fa4', `${layerId} must still TRACK by icao24`);
   }
+});
+
+
+test('generic aircraft requests follow the nearest live contact instead of failing', async () => {
+  globalThis.window = globalThis.window || { clearTimeout, setTimeout, requestIdleCallback: null };
+  const cases = [
+    { query: 'military flight', layerId: 'military', id: 'ae0001', label: 'REACH51' },
+    { query: 'Militärflug', layerId: 'military', id: 'ae0002', label: 'VIPER1' },
+    { query: 'any plane', layerId: 'flights', id: 'ae0003', label: 'SWA123' },
+  ];
+  for (const expected of cases) {
+    const { viewer, styleManager } = createVoiceNavigationHarness();
+    const enabled = new Map();
+    const nearbyOptions = [];
+    let trackedId = null;
+    const module = {
+      findByQuery: (query) => String(query).toLowerCase() === expected.id ? {
+        icao24: expected.id,
+        callsign: expected.label,
+        registration: 'N123GE',
+        latitude: 37.2,
+        longitude: -115.7,
+        altitudeM: 12_000,
+      } : null,
+      getNearby: (_center, _range, _max, options) => {
+        nearbyOptions.push(options);
+        return [{ id: expected.label, icao24: expected.id, position: viewer.camera.positionWC, distance: 1_000 }];
+      },
+      trackById: (id) => {
+        trackedId = id;
+        return true;
+      },
+    };
+    const runner = createGevActionRunner({
+      viewer,
+      styleManager,
+      dataManager: {
+        layers: new Map([
+          ['flights', { module }],
+          ['military', { module }],
+        ]),
+        isEnabled: (id) => enabled.get(id) === true,
+        getAll: () => [],
+        _setEnabledWithIntent: (id, value, options) => {
+          enabled.set(id, value);
+          return { promise: Promise.resolve(true), intentEpoch: 1 };
+        },
+        _waitForVisibilityIntent: async () => ({ succeeded: true }),
+      },
+    });
+
+    const result = await runner('track_entity', { query: expected.query });
+    assert.equal(result.ok, true, expected.query);
+    assert.equal(result.layerId, expected.layerId, expected.query);
+    assert.equal(result.label, expected.label, expected.query);
+    assert.equal(result.genericQuery, true, expected.query);
+    assert.equal(result.selection, 'nearest', expected.query);
+    assert.equal(trackedId, expected.id, expected.query);
+    assert.deepEqual(nearbyOptions.at(-1), { includeHidden: true }, expected.query);
+  }
+});
+
+
+test('generic satellite requests follow the nearest live satellite', async () => {
+  globalThis.window = globalThis.window || { clearTimeout, setTimeout, requestIdleCallback: null };
+  const { viewer, styleManager } = createVoiceNavigationHarness();
+  const enabled = new Map();
+  let trackedId = null;
+  const module = {
+    findByQuery: (query) => String(query) === '25544' ? {
+      noradId: 25544,
+      name: 'ISS (ZARYA)',
+      latitude: 37.2,
+      longitude: -115.7,
+      altitudeM: 420_000,
+    } : null,
+    getAllPositions: () => [{
+      id: 25544,
+      label: 'ISS (ZARYA)',
+      position: viewer.camera.positionWC,
+      latitude: 37.2,
+      longitude: -115.7,
+      altitudeM: 420_000,
+    }],
+    trackById: (id) => {
+      trackedId = id;
+      return true;
+    },
+  };
+  const runner = createGevActionRunner({
+    viewer,
+    styleManager,
+    dataManager: {
+      layers: new Map([['satellites', { module }]]),
+      isEnabled: (id) => enabled.get(id) === true,
+      getAll: () => [],
+      _setEnabledWithIntent: (id, value, options) => {
+        enabled.set(id, value);
+        return { promise: Promise.resolve(true), intentEpoch: 1 };
+      },
+      _waitForVisibilityIntent: async () => ({ succeeded: true }),
+    },
+  });
+
+  const result = await runner('track_entity', { query: 'einen sateliten' });
+  assert.equal(result.ok, true);
+  assert.equal(result.layerId, 'satellites');
+  assert.equal(result.kind, 'satellite');
+  assert.equal(result.label, 'ISS (ZARYA)');
+  assert.equal(result.genericQuery, true);
+  assert.equal(result.selection, 'nearest');
+  assert.equal(trackedId, 25544);
+});
+
+test('"ein anderer Satellit" skips the currently followed satellite', async () => {
+  globalThis.window = globalThis.window || { clearTimeout, setTimeout, requestIdleCallback: null };
+  const { viewer, styleManager } = createVoiceNavigationHarness();
+  const enabled = new Map();
+  let trackedId = null;
+  // HXMT sits at the camera (it is being followed); ISS is the next contact.
+  const positions = [
+    { id: 44874, label: 'HXMT', position: viewer.camera.positionWC, latitude: 10, longitude: 20, altitudeM: 550_000 },
+    { id: 25544, label: 'ISS (ZARYA)', position: viewer.camera.positionWC, latitude: 37.2, longitude: -115.7, altitudeM: 420_000 },
+  ];
+  const module = {
+    getTrackedInfo: () => ({ noradId: 44874, name: 'HXMT', latitude: 10, longitude: 20, altitudeM: 550_000 }),
+    findByQuery: (query) => {
+      const hit = positions.find((p) => String(p.id) === String(query)) || null;
+      return hit ? {
+        noradId: hit.id,
+        name: hit.label,
+        latitude: hit.latitude,
+        longitude: hit.longitude,
+        altitudeM: hit.altitudeM,
+      } : null;
+    },
+    getAllPositions: () => positions,
+    trackById: (id) => {
+      trackedId = id;
+      return true;
+    },
+  };
+  const runner = createGevActionRunner({
+    viewer,
+    styleManager,
+    dataManager: {
+      layers: new Map([['satellites', { module }]]),
+      isEnabled: (id) => enabled.get(id) === true,
+      getAll: () => [],
+      _setEnabledWithIntent: (id, value, options) => {
+        enabled.set(id, value);
+        return { promise: Promise.resolve(true), intentEpoch: 1 };
+      },
+      _waitForVisibilityIntent: async () => ({ succeeded: true }),
+    },
+  });
+
+  const result = await runner('track_entity', { query: 'ein anderer satellit' });
+  assert.equal(result.ok, true);
+  assert.equal(result.skippedCurrentlyTracked, true);
+  assert.equal(result.differentFromSelected, true);
+  assert.equal(trackedId, 25544, 'the followed satellite must be skipped');
+
+  const byFlag = await runner('track_entity', { query: 'nearest satellite', differentFromSelected: true });
+  assert.equal(byFlag.ok, true);
+  assert.equal(byFlag.skippedCurrentlyTracked, true);
+  assert.equal(trackedId, 25544, 'the args flag drives the same skip');
+});
+
+test('"ein anderer Satellit" fails honestly when the followed one is the only contact', async () => {
+  globalThis.window = globalThis.window || { clearTimeout, setTimeout, requestIdleCallback: null };
+  const { viewer, styleManager } = createVoiceNavigationHarness();
+  const enabled = new Map();
+  const module = {
+    getTrackedInfo: () => ({ noradId: 44874, name: 'HXMT', latitude: 10, longitude: 20, altitudeM: 550_000 }),
+    findByQuery: () => null,
+    getAllPositions: () => [
+      { id: 44874, label: 'HXMT', position: viewer.camera.positionWC, latitude: 10, longitude: 20, altitudeM: 550_000 },
+    ],
+    trackById: () => true,
+  };
+  const runner = createGevActionRunner({
+    viewer,
+    styleManager,
+    dataManager: {
+      layers: new Map([['satellites', { module }]]),
+      isEnabled: (id) => enabled.get(id) === true,
+      getAll: () => [],
+      _setEnabledWithIntent: (id, value, options) => {
+        enabled.set(id, value);
+        return { promise: Promise.resolve(true), intentEpoch: 1 };
+      },
+      _waitForVisibilityIntent: async () => ({ succeeded: true }),
+    },
+  });
+
+  const result = await runner('track_entity', { query: 'ein anderer satellit' });
+  assert.equal(result.ok, false);
+  assert.equal(result.skippedCurrentlyTracked, true);
+  assert.match(result.error, /no other satellite/i);
 });
 
 function createVoiceNavigationHarness({ cockpitActive = false } = {}) {
@@ -282,6 +487,57 @@ test('nearest-aircraft voice action serializes layer enable, arrival, refresh, a
   assert.equal(result.feed.source, 'adsb.lol fallback');
   assert.equal(trackedId, 'airborne-far', 'the closer landed record must be excluded');
   assert.deepEqual(order, ['enable', 'fly', 'refresh-austin', 'track:airborne-far']);
+});
+
+
+test('nearest-aircraft "another" selection skips the currently tracked contact', async () => {
+  globalThis.window = globalThis.window || { clearTimeout, setTimeout, requestIdleCallback: null };
+  const { viewer, styleManager } = createVoiceNavigationHarness();
+  const order = [];
+  let completeFlight = null;
+  viewer.camera.flyTo = (options) => { completeFlight = options.complete; };
+  styleManager.runImmediateLocationNavigation = (navigate) => (
+    styleManager.runImmediateNavigation('location', navigate)
+  );
+  let enabled = false;
+  const flights = {
+    source: 'OpenSky Network',
+    getStats: () => ({ source: 'OpenSky Network', count: 2, lastUpdate: Date.now() }),
+    getTrackedInfo: () => ({ icao24: 'airborne-near' }),
+    getAnalystRecords: () => [
+      { id: 'AIR1', icao24: 'airborne-near', callsign: 'AIR1', lat: 30.30, lon: -97.76, altitudeM: 2400, onGround: false },
+      { id: 'AIR2', icao24: 'airborne-far', callsign: 'AIR2', lat: 30.32, lon: -97.78, altitudeM: 2800, onGround: false },
+    ],
+    findByQuery: (query) => (query === 'airborne-far'
+      ? { icao24: 'airborne-far', callsign: 'AIR2', latitude: 30.32, longitude: -97.78, altitudeM: 2800 }
+      : null),
+    trackById: (id) => {
+      order.push(`track:${id}`);
+      return true;
+    },
+  };
+  const dataManager = {
+    layers: new Map([['flights', { module: flights }]]),
+    isEnabled: () => enabled,
+    async setEnabled() { enabled = true; return true; },
+    async refreshLayer() { return true; },
+    getAll: () => [{ id: 'flights', name: 'Live Flights', enabled }],
+  };
+  const runner = createGevActionRunner({ viewer, styleManager, dataManager });
+  const resultPromise = runner('select_nearest_aircraft', {
+    layerId: 'flights',
+    locationId: 'austin',
+    differentFromSelected: true,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  completeFlight();
+  const result = await resultPromise;
+  assert.equal(result.ok, true);
+  assert.equal(result.label, 'AIR2');
+  assert.equal(result.aircraft.id, 'airborne-far');
+  assert.equal(result.differentFromSelected, true);
+  assert.equal(result.skippedCurrentlyTracked, true);
+  assert.deepEqual(order, ['track:airborne-far']);
 });
 
 test('nearest-aircraft voice action refreshes an already-enabled viewport layer after arrival', async () => {
@@ -3455,5 +3711,239 @@ test('findCctvCameraMatch resolves exact, name substring, city, and multi-token 
   assert.equal(findCctvCameraMatch(sampleCams, 'der tower bridge in london')?.name.includes('Tower Bridge'), true);
   assert.equal(findCctvCameraMatch(sampleCams, 'zeig mir eine cctv kamera in London')?.city, 'London');
 });
+
+test('control_cctv with action analyze focuses camera and returns tactical analysis', async () => {
+  const selected = [];
+  const focused = [];
+  const mockCctv = {
+    getUIState: () => ({
+      cameras: [
+        { id: 'ch-diepoldsau-rheinbruecke', name: 'Diepoldsau Rheinbrücke Cam', city: 'Diepoldsau', headingDeg: 110 },
+      ],
+    }),
+    getActiveCameraId: () => 'ch-diepoldsau-rheinbruecke',
+    selectCamera: (id) => { selected.push(id); return true; },
+    focusCamera: (id) => { focused.push(id); return 'ok'; },
+  };
+
+  const viewer = {
+    clock: { onTick: { addEventListener: () => () => {} } },
+    scene: { canvas: { addEventListener() {}, removeEventListener() {} } },
+    camera: { moveEnd: { addEventListener: () => () => {} } },
+  };
+
+  const runner = createGevActionRunner({
+    viewer,
+    styleManager: {},
+    dataManager: {
+      layers: new Map([['cctv', { module: mockCctv }]]),
+      isEnabled: () => true,
+      setEnabled: async () => true,
+      getLayerParams: () => ({}),
+      setLayerParams: () => {},
+    },
+  });
+
+  const res = await runner('control_cctv', { action: 'analyze', cameraQuery: 'Diepoldsau' });
+  assert.equal(res.ok, true);
+  assert.equal(res.action, 'control_cctv');
+  assert.equal(res.subaction, 'analyze');
+  assert.equal(res.cameraId, 'ch-diepoldsau-rheinbruecke');
+  assert.equal(selected.includes('ch-diepoldsau-rheinbruecke'), true);
+  assert.equal(focused.includes('ch-diepoldsau-rheinbruecke'), true);
+  assert.ok(res.analysis.includes('Diepoldsau'));
+});
+
+test('nearbyTacticalIntel identifies Belgorod and Kyiv drone strikes with full metadata', () => {
+  const belgorodIntel = nearbyTacticalIntel(null, null, 50.8, 36.5, 50);
+  assert.ok(belgorodIntel.length > 0);
+  const strike = belgorodIntel[0];
+  assert.ok(strike.title.includes('Belgorod') || strike.title.includes('Schebekino'));
+  assert.equal(strike.category, 'drone-attacks');
+  assert.ok(strike.distanceKm < 5);
+  assert.ok(strike.impactRadiusM >= 1000);
+  assert.ok(strike.summary.length > 20);
+
+  const kyivIntel = nearbyTacticalIntel(null, null, 50.4501, 30.5234, 50);
+  assert.ok(kyivIntel.length > 0);
+  const kyivStrike = kyivIntel[0];
+  assert.ok(kyivStrike.title.includes('Kiew') || kyivStrike.title.includes('Kyiv'));
+  assert.equal(kyivStrike.droneType, 'Shahed-136/131');
+});
+
+test('generateCircleRing computes closed circular polygon geometry', () => {
+  const ring = generateCircleRing(50.8, 36.5, 2000, 36);
+  assert.equal(ring.length, 37);
+  assert.ok(Array.isArray(ring[0]));
+  assert.equal(ring[0].length, 2);
+  // Lon and Lat should be close to center
+  assert.ok(Math.abs(ring[0][1] - 50.8) < 0.05);
+  assert.ok(Math.abs(ring[0][0] - 36.5) < 0.05);
+});
+
+test('tactical actions execute correctly via createGevActionRunner', async () => {
+  const drawnAnnotations = [];
+  const mockAnnotations = {
+    annotate: async (reqs) => {
+      drawnAnnotations.push(...reqs);
+      return { drawn: reqs.length, failed: 0 };
+    },
+  };
+
+  let enabledLayers = [];
+  const mockDataManager = {
+    layers: new Map(),
+    isEnabled: () => false,
+    enableLayer: (id) => { enabledLayers.push(id); return true; },
+  };
+
+  const mockViewer = {
+    clock: { onTick: { addEventListener: () => () => {} } },
+    scene: { canvas: { addEventListener() {}, removeEventListener() {} } },
+    camera: {
+      positionWC: Cesium.Cartesian3.fromDegrees(36.5, 50.8, 10000),
+      moveEnd: { addEventListener: () => () => {} },
+      flyToBoundingSphere() {},
+      lookAt() {},
+      lookAtTransform() {},
+    },
+  };
+
+  const runner = createGevActionRunner({
+    viewer: mockViewer,
+    styleManager: {},
+    dataManager: mockDataManager,
+    annotations: mockAnnotations,
+  });
+
+  // 1. Mark tactical impact zone
+  const markRes = await runner('mark_tactical_impact_zone', {
+    latitude: 50.8,
+    longitude: 36.5,
+    radiusM: 2000,
+  });
+  assert.equal(markRes.ok, true);
+  assert.equal(markRes.action, 'mark_tactical_impact_zone');
+  assert.equal(markRes.latitude, 50.8);
+  assert.equal(markRes.longitude, 36.5);
+  assert.equal(drawnAnnotations.length, 1);
+  assert.equal(drawnAnnotations[0].type, 'area');
+  assert.equal(drawnAnnotations[0].color, 'cyan');
+  assert.ok(drawnAnnotations[0].ring.length >= 3);
+
+  // 2. Describe tactical event
+  const descRes = await runner('describe_tactical_event', {
+    latitude: 50.8,
+    longitude: 36.5,
+  });
+  assert.equal(descRes.ok, true);
+  assert.equal(descRes.action, 'describe_tactical_event');
+  assert.ok(descRes.sitrepDe.includes('Belgorod') || descRes.sitrepDe.includes('Schebekino'));
+  assert.ok(descRes.sitrepDe.includes('Drohne'));
+
+  // 3. Fly to nearest tactical target
+  const flyRes = await runner('fly_to_nearest_tactical_target', {
+    category: 'drone-attacks',
+  });
+  assert.equal(flyRes.ok, true);
+  assert.equal(flyRes.action, 'fly_to_nearest_tactical_target');
+  assert.ok(flyRes.rangeM >= 6000); // Safe altitude, never 250m!
+  assert.ok(enabledLayers.includes('drone-attacks'));
+});
+
+test('query_osint_news retrieves breaking dispatches and generates sitrepDe', async () => {
+  const mockViewer = {
+    clock: { onTick: { addEventListener: () => () => {} } },
+    scene: { canvas: { addEventListener() {}, removeEventListener() {} } },
+    camera: {
+      positionWC: Cesium.Cartesian3.fromDegrees(36.5, 50.8, 1000),
+      moveEnd: { addEventListener: () => () => {} },
+    },
+  };
+  const mockDataManager = {
+    layers: new Map(),
+    getAll: () => [],
+  };
+
+  const runner = createGevActionRunner({
+    viewer: mockViewer,
+    styleManager: {},
+    dataManager: mockDataManager,
+  });
+
+  const resAll = await runner('query_osint_news', {});
+  assert.equal(resAll.ok, true);
+  assert.equal(resAll.action, 'query_osint_news');
+  assert.ok(resAll.count >= 4);
+  assert.ok(resAll.sitrepDe.includes('OSINT'));
+  assert.ok(Array.isArray(resAll.items));
+
+  const resFiltered = await runner('query_osint_news', { query: 'Charkiw' });
+  assert.equal(resFiltered.ok, true);
+  assert.ok(resFiltered.items.some((i) => i.locationName.includes('Kharkiv') || i.title.includes('Charkiw')));
+});
+
+test('query_financial_market_impact retrieves quotes and causality sitrep', async () => {
+  const mockViewer = {
+    clock: { onTick: { addEventListener: () => () => {} } },
+    scene: { canvas: { addEventListener() {}, removeEventListener() {} } },
+    camera: {
+      positionWC: Cesium.Cartesian3.fromDegrees(0, 0, 1000),
+      moveEnd: { addEventListener: () => () => {} },
+    },
+  };
+  const mockDataManager = {
+    layers: new Map(),
+    getAll: () => [],
+  };
+
+  const runner = createGevActionRunner({
+    viewer: mockViewer,
+    styleManager: {},
+    dataManager: mockDataManager,
+  });
+
+  const res = await runner('query_financial_market_impact', {});
+  assert.equal(res.ok, true);
+  assert.equal(res.action, 'query_financial_market_impact');
+  assert.ok(Array.isArray(res.quotes));
+  assert.ok(res.quotes.some((q) => q.symbol === 'BZ=F'));
+  assert.ok(Array.isArray(res.causalImpacts));
+  assert.ok(res.sitrepDe.includes('Brent'));
+});
+
+test('search_and_forecast_asset retrieves asset deep dive and generates in-depth prognosis', async () => {
+  const mockViewer = {
+    clock: { onTick: { addEventListener: () => () => {} } },
+    scene: { canvas: { addEventListener() {}, removeEventListener() {} } },
+    camera: {
+      positionWC: Cesium.Cartesian3.fromDegrees(0, 0, 1000),
+      moveEnd: { addEventListener: () => () => {} },
+    },
+  };
+  const mockDataManager = {
+    layers: new Map(),
+    getAll: () => [],
+  };
+
+  const runner = createGevActionRunner({
+    viewer: mockViewer,
+    styleManager: {},
+    dataManager: mockDataManager,
+  });
+
+  const res = await runner('search_and_forecast_asset', { query: 'Rheinmetall' });
+  assert.equal(res.ok, true);
+  assert.equal(res.action, 'search_and_forecast_asset');
+  assert.equal(res.asset.symbol, 'RHM.DE');
+  assert.ok(res.prognosis);
+  assert.ok(res.prognosis.trend.includes('BULLISH'));
+  assert.ok(res.prognosis.targetCorridor);
+  assert.ok(res.sitrepDe.includes('Rheinmetall'));
+  assert.ok(res.sitrepDe.includes('Zielkorridor'));
+});
+
+
+
 
 

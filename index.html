@@ -1,10 +1,17 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="de">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="God's Eye" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#060a12" />
   <title>God's Eye View</title>
   <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <link rel="manifest" href="/manifest.json" />
   <link rel="stylesheet" href="/style.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -37,7 +44,11 @@
 
   <!-- Top-center camera and share actions -->
   <nav id="top-center-actions" aria-label="Globe actions">
-    <button id="clear-selected-layers" type="button" aria-label="Clear selected data layers" title="Turn off all selected data layers">
+    <button id="live-monitor-btn" type="button" aria-label="Live Besucher- und Telemetrie-Monitor" title="Live Besucher- & Telemetrie-Monitor öffnen">
+      <span class="material-symbols-outlined" aria-hidden="true">sensors</span>
+      <span class="monitor-pulse-badge" id="monitor-pulse-badge" title="Aktive Besucher">1</span>
+    </button>
+    <button id="clear-selected-layers" type="button" aria-label="Alle Datenebenen deaktivieren" title="Alle ausgewählten Datenebenen ausschalten">
       <span class="material-symbols-outlined" aria-hidden="true">layers_clear</span>
     </button>
     <button id="share-btn" type="button" aria-label="Copy share link" title="Copy share link">
@@ -617,6 +628,7 @@
       </div>
       <div class="cctv-controls">
         <button id="cctv-projection-btn" class="scene-btn">PROJECTION ON</button>
+        <button id="cctv-analyze-btn" class="scene-btn" title="Live-Kamerabild mit KI (Abacus AI / Vision) analysieren">AI SCAN</button>
         <span id="cctv-quality-chip">CAL · --</span>
       </div>
       <div class="cctv-calibration-block">
@@ -640,6 +652,49 @@
       </div>
       <div class="cctv-summary-label">SCENE SUMMARY</div>
       <div id="cctv-summary">Enable CCTV to start camera-linked intelligence summaries.</div>
+    </div>
+  </div>
+
+  <!-- Abacus Botnet Live Intel Panel -->
+  <div id="botnet-intel-panel" class="panel-collapsible collapsed" data-panel-id="botnet-intel-panel">
+    <div class="panel-glow"></div>
+    <div class="botnet-panel-inner">
+      <div id="botnet-panel-header" class="panel-header">
+        <span class="botnet-pulse-indicator" aria-hidden="true"></span>
+        <span class="panel-title">BOTNET RADAR</span>
+        <span class="panel-divider"></span>
+        <button id="botnet-refresh-btn" class="botnet-header-btn" type="button" title="Feed aktualisieren">
+          <span class="material-symbols-outlined">sync</span>
+        </button>
+        <button id="botnet-expand-toggle-btn" class="botnet-header-btn" type="button" title="Vollansicht">
+          <span class="material-symbols-outlined">open_in_full</span>
+        </button>
+        <button class="panel-collapse-btn" data-collapse-target="botnet-intel-panel" title="Botnet-Radar ein-/ausblenden">+</button>
+      </div>
+
+      <div class="botnet-panel-body">
+        <div class="botnet-status-strip">
+          <span class="botnet-ai-badge">LIVE INTEL · KI-ANALYSE</span>
+          <span id="botnet-count-badge" class="botnet-count-badge">LADEN...</span>
+        </div>
+
+        <button id="botnet-global-sitrep-btn" class="botnet-global-sitrep-chip" type="button" title="Globalen Lagebericht und Finanzmarktreaktion öffnen">
+          <span class="material-symbols-outlined" style="font-size: 16px;">query_stats</span> LAGEBERICHT &amp; MÄRKTE
+        </button>
+
+        <div class="botnet-category-bar" role="tablist" aria-label="Botnet-Kategorien">
+          <button class="botnet-tab-btn active" data-category="ALL" type="button">ALLE</button>
+          <button class="botnet-tab-btn" data-category="UNWETTER" type="button">🌪️ UNWETTER</button>
+          <button class="botnet-tab-btn" data-category="CRISIS" type="button">🌋 NATURKRISEN</button>
+          <button class="botnet-tab-btn" data-category="RADAR" type="button">📡 EloKa & RADAR</button>
+          <button class="botnet-tab-btn" data-category="GEOPOLITICS" type="button">⚔️ GEOPOLITIK</button>
+          <button class="botnet-tab-btn" data-category="SCHWEIZ" type="button">🇨🇭 SCHWEIZ</button>
+        </div>
+
+        <div id="botnet-feed-container" class="botnet-feed-container" role="feed">
+          <div class="botnet-loading-spinner">Verbindung zum OSINT-Feed wird hergestellt...</div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -825,6 +880,7 @@
         </section>
       </div>
     </div>
+
   </aside>
 
   <div id="scene-runtime"></div>
@@ -910,6 +966,35 @@
 
   <!-- Intelligence HUD Overlay -->
   <div id="intel-hud"></div>
+
+  <!-- Abacus Tactical Briefing Modal -->
+  <div id="botnet-briefing-modal" class="botnet-briefing-modal" hidden>
+    <div class="botnet-briefing-backdrop"></div>
+    <div class="botnet-briefing-dialog" role="dialog" aria-modal="true" aria-labelledby="botnet-briefing-title">
+      <header class="botnet-briefing-header">
+        <div class="botnet-briefing-title-group">
+          <span class="botnet-briefing-kicker">OSINT LIVE INTEL · LAGEBERICHT</span>
+          <h3 id="botnet-briefing-title">Lagebericht &amp; Analyse</h3>
+          <div id="botnet-briefing-meta" class="botnet-briefing-meta">—</div>
+        </div>
+        <button id="botnet-briefing-close-btn" class="botnet-briefing-close-btn" type="button" aria-label="Close">✕</button>
+      </header>
+      <div id="botnet-briefing-content" class="botnet-briefing-content">
+        <div class="botnet-briefing-loading">Lagebericht wird analysiert...</div>
+      </div>
+      <footer class="botnet-briefing-footer">
+        <button id="botnet-briefing-fly-btn" class="scene-btn" type="button">
+          <span class="material-symbols-outlined" style="font-size: 16px; vertical-align: middle;">near_me</span> ANFLIEGEN
+        </button>
+        <button id="botnet-briefing-chat-btn" class="scene-btn scene-btn-chat" type="button" title="Lage im KI-Chat überwachen">
+          <span class="material-symbols-outlined" style="font-size: 16px; vertical-align: middle;">chat</span> IM CHAT ÜBERWACHEN
+        </button>
+        <button id="botnet-briefing-copy-btn" class="scene-btn" type="button">
+          <span class="material-symbols-outlined" style="font-size: 16px; vertical-align: middle;">content_copy</span> LAGEBERICHT KOPIEREN
+        </button>
+      </footer>
+    </div>
+  </div>
 
   <!-- Loading screen -->
   <div id="loading-screen">

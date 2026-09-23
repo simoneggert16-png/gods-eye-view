@@ -161,7 +161,7 @@ export async function resolveAnnotationTarget({
         // LOOKING AT. If the geocode missed or landed far from the view centre, try a view-biased
         // Places Text Search; a hit within the trust bound overrides + skips the gate. Local geocodes
         // (neighborhoods, nearby buildings) are NOT far, so they keep the geocode + scope/polygon path.
-        if (center && trace.places === 'skipped' && !bypassNearViewGuards) {
+        if (center && trace.places === 'skipped' && !flyTo && !adminScopeFromAsk(target, entityKind)) {
           let geocodeFar = source !== 'geocode';
           if (source === 'geocode' && approximateDistanceM(center.lat, center.lon, lat, lon) / 1000 > MIN_DRIFT_FLOOR_KM) {
             geocodeFar = true;
@@ -280,6 +280,7 @@ export async function resolveAnnotationTarget({
   // Grounds/compound asks (target OR label wording, or entityKind fact) go outline-first:
   // they reach the real enclosing-polygon sweep even under `around_the_thing` phrasing.
   const groundsLike = isGroundsLikeAsk(target, labelHint, entityKind);
+  const airportAsk = isAirportAsk(target, labelHint, entityKind) || (geocodeTypes || []).includes('airport') || (geocodeTypes || []).includes('aerodrome');
 
   /**
    * Resolve the footprint/outline for this (already-gated) anchor. Reads the outer locals
@@ -298,6 +299,9 @@ export async function resolveAnnotationTarget({
    */
   const resolveOutline = async () => {
     let scope = baseScope;
+    if ((scope === 'auto' || scope === 'compound') && airportAsk) {
+      scope = 'airport';
+    }
     const isAdmin = scope === 'country' || scope === 'state' || scope === 'county' || scope === 'city';
     const around = intent === 'around_the_thing';
     // FIRST rung: bundled Natural Earth physical region (Alps, Rockies, Sahara,
@@ -340,6 +344,22 @@ export async function resolveAnnotationTarget({
       // grounds" as around_the_thing, but the grounds ARE the thing — the real enclosing
       // polygon (below) beats a 400 m disc (field test 8's "spherical round one").
       fp = synthesizeBufferedArea(lat, lon, AROUND_LANDMARK_RADIUS_M);
+    } else if (scope === 'airport') {
+      // Airport / aerodrome: use pre-resolved polygon from geocoder, or fast Nominatim polygon, or Overpass
+      if (placePolygonRing && placePolygonRing.length >= 3) {
+        fp = { ring: placePolygonRing, kind: 'area', heightM: null, synthesized: false };
+      } else {
+        fp = await fetchNominatimAdminPolygon(matchName || target, signal);
+        if (!fp) {
+          fp = await fetchFootprint(lat, lon, matchName, scope, signal, 'loose');
+        }
+        if (!fp && placeViewport) {
+          const vpRing = ringFromViewport(placeViewport);
+          if (vpRing && vpRing.length >= 3) {
+            fp = { ring: vpRing, kind: 'area', heightM: null, synthesized: true };
+          }
+        }
+      }
     } else if (isAdmin || isIslandAsk || (placePolygonRing && placePolygonRing.length >= 3 && (scope === 'compound' || scope === 'auto' || geocodeTypes.includes('natural_feature') || geocodeTypes.includes('island')))) {
       // Pure admin, island, or pre-resolved polygon from geocoder:
       if (placePolygonRing && placePolygonRing.length >= 3) {
@@ -407,6 +427,15 @@ export async function resolveAnnotationTarget({
       // Point-like targets use the strict 'point' selection: exact-ish name + monument
       // scale, else no polygon at all — the honest point beats a locality-word match.
       fp = await fetchFootprint(lat, lon, matchName, scope, signal, pointLike ? 'point' : 'loose');
+      if (!fp && (scope === 'compound' || scope === 'airport' || airportAsk)) {
+        fp = await fetchNominatimAdminPolygon(matchName || target, signal);
+      }
+      if (!fp && placeViewport && (scope === 'compound' || scope === 'airport' || airportAsk)) {
+        const vpRing = ringFromViewport(placeViewport);
+        if (vpRing && vpRing.length >= 3) {
+          fp = { ring: vpRing, kind: 'area', heightM: null, synthesized: true };
+        }
+      }
       // A "grounds/compound/campus" phrase ("Texas Capitol grounds") names an ENCLOSING area. The
       // primary footprint above returns the BUILDING (the dome) or null — neither is the grounds. The
       // real enclosing polygon (e.g. "Capitol Square", leisure=park) IS in OSM but only surfaces via a
@@ -512,7 +541,8 @@ export async function resolveAnnotationTarget({
 // no cap (they are legitimately large or capped elsewhere).
 const SCOPE_AREA_CAP_M2 = {
   building: 0.6e6, // 0.6 km²
-  compound: 60e6, // 60 km² (Presidio ≈ 6 km²; a mall ≈ 0.2 km²)
+  compound: 80e6, // 80 km² (Presidio ≈ 6 km²; a mall ≈ 0.2 km²)
+  airport: 1.5e9, // 1,500 km² (King Fahd ≈ 776 km²; Denver ≈ 135 km²)
   neighborhood: 80e6, // 80 km²
   city: 9e9, // 9,000 km²
   county: 1.2e11, // 120,000 km²
@@ -758,7 +788,7 @@ export function nominatimRowToPlace(row) {
   else if (kind === 'road' || cls === 'highway') types = ['route'];
   else if (cls === 'natural') types = ['natural_feature'];
   else if (kind === 'park' || cls === 'leisure') types = ['park'];
-  else if (cls === 'aeroway') types = ['airport'];
+  else if (cls === 'aeroway' || kind === 'aerodrome') types = ['airport'];
   else if (kind === 'stadium') types = ['stadium'];
   else if (kind === 'university' || kind === 'college') types = ['university'];
   else if (['island', 'islet', 'archipelago'].includes(kind)) types = ['island', 'natural_feature', 'political'];
@@ -921,7 +951,8 @@ function scopeFromTypes(types) {
   if (t.has('sublocality') || t.has('sublocality_level_1') || t.has('neighborhood')) return 'neighborhood';
   if (t.has('route') || t.has('intersection')) return 'street';
   if (t.has('premise') || t.has('subpremise') || t.has('street_address')) return 'building';
-  if (t.has('shopping_mall') || t.has('university') || t.has('hospital') || t.has('airport')
+  if (t.has('airport') || t.has('aerodrome')) return 'airport';
+  if (t.has('shopping_mall') || t.has('university') || t.has('hospital')
       || t.has('park') || t.has('stadium') || t.has('amusement_park') || t.has('campus')
       || t.has('zoo') || t.has('cemetery') || t.has('tourist_attraction')) return 'compound';
   // Lakes / reservoirs / mountains: compound-sized natural areas (caps their footprint
@@ -960,6 +991,7 @@ function adminScopeFromAsk(target, entityKind) {
  */
 export function refineScope(scope, entityKind) {
   if (scope !== 'auto') return scope;
+  if (entityKind === 'airport' || entityKind === 'facility' || entityKind === 'aerodrome') return 'airport';
   if (entityKind === 'building') return 'building';
   if (entityKind === 'compound') return 'compound';
   if (entityKind === 'district') return 'neighborhood';
@@ -1591,6 +1623,16 @@ export function isGroundsLikeAsk(target, label, entityKind) {
 }
 
 /**
+ * Whether an annotation asks for an AIRPORT / AERODROME / AIRBASE area boundary.
+ * Exported for tests.
+ */
+export function isAirportAsk(target, label, entityKind) {
+  if (entityKind) return entityKind === 'airport' || entityKind === 'aerodrome' || entityKind === 'facility';
+  const s = `${target || ''} ${label || ''}`.toLowerCase();
+  return /\b(airport|flughafen|aerodrome|airfield|flugplatz|aeropuerto|aeroporto|air\s*base|airbase|fliegerhorst)\b/i.test(s);
+}
+
+/**
  * Find the actual OSM monument/memorial/statue NEAR a view centre, name-matched. Google geocodes
  * these obscure names unreliably (it scatters several Capitol-grounds monuments across the city),
  * so for a monument-like target we anchor on what the user is LOOKING AT and snap to the real
@@ -1718,7 +1760,9 @@ export function selectFootprint(elements, targetLat, targetLon, query, mode = 'l
     } else {
       if (areaM2 < 200) continue;
       if (!named && areaM2 > 600_000) continue;
-      if (named && areaM2 > 80_000_000) continue;
+      const isAerodrome = tags.aeroway === 'aerodrome' || tags.landuse === 'aerodrome';
+      const maxArea = isAerodrome ? 1.5e9 : 80_000_000;
+      if (named && areaM2 > maxArea) continue;
     }
 
     const contains = pointInPolygon(targetLon, targetLat, coords);
@@ -2033,9 +2077,9 @@ export async function placesNearViewRecovery(viewer, query, geocoded = null, sig
 function pickWorldFromScreen(viewer, nx, ny) {
   const scene = viewer?.scene;
   if (!scene) return null;
-  const canvas = scene.canvas;
-  const w = canvas.clientWidth || canvas.width || 0;
-  const h = canvas.clientHeight || canvas.height || 0;
+  const canvas = scene.canvas || viewer?.canvas;
+  const w = canvas?.clientWidth || canvas?.width || 0;
+  const h = canvas?.clientHeight || canvas?.height || 0;
   if (!w || !h) return null;
   const px = Math.max(0, Math.min(1, nx)) * w;
   const py = Math.max(0, Math.min(1, ny)) * h;

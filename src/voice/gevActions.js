@@ -21,6 +21,30 @@ import { resolveRegionRingForQuery } from '../annotations/annotationResolver.js'
 import { WORLD_LANDMARKS } from './worldLandmarks.js';
 import { normalizeRadioCountryInput } from '../data/radioCountry.js';
 import { TR3B_CLASS } from '../data/tr3bRegistry.js';
+import { SEED_DRONE_ATTACKS, SEED_TERROR_ATTACKS } from '../data/droneAttacksEngine.js';
+import {
+  SEED_CONFLICT_ZONES,
+  SEED_FRONTLINES,
+  SEED_MISSILE_STRIKES,
+  SEED_BATTLES,
+  SEED_BOMBARDMENTS,
+} from '../data/militaryConflictEngine.js';
+import {
+  SEED_MISSILE_TESTS,
+  SEED_MILITARY_CONVOYS,
+  SEED_CAMPAIGN_TRAILS,
+  SEED_SECRET_SERVICE_OPS,
+} from '../data/specialOpsEngine.js';
+import { SEED_OSINT_RECORDS } from '../data/liveOsintLayer.js';
+import { showTacticalSitrep } from '../ui/tacticalSitrepModal.js';
+import {
+  fetchLiveMarketQuotes,
+  analyzeGeopoliticalMarketImpact,
+  searchFinancialSymbols,
+  fetchAssetDeepDive,
+  generateAssetPrognosis,
+  generateTopBreakoutStocks,
+} from '../data/geoMarketEngine.js';
 
 const ALLOWED_STYLES = new Set(['normal', 'retro', 'surveillance', 'thermal', 'anime', 'noir', 'snow']);
 const PANEL_ALIASES = new Map([
@@ -177,6 +201,76 @@ const LAYER_ALIASES = new Map([
   ['firms', 'local-firms'],
   ['fires', 'local-firms'],
   ['active fires', 'local-firms'],
+  ['conflicts', 'conflicts'],
+  ['conflict zones', 'conflicts'],
+  ['konflikte', 'conflicts'],
+  ['krisengebiete', 'conflicts'],
+  ['frontlines', 'frontlines'],
+  ['frontline', 'frontlines'],
+  ['frontlinien', 'frontlines'],
+  ['frontlinie', 'frontlines'],
+  ['kontrolllinien', 'frontlines'],
+  ['missile-strikes', 'missile-strikes'],
+  ['missile strikes', 'missile-strikes'],
+  ['raketenschläge', 'missile-strikes'],
+  ['raketenschlaege', 'missile-strikes'],
+  ['raketenangriffe', 'missile-strikes'],
+  ['raketenangriff', 'missile-strikes'],
+  ['drone-attacks', 'drone-attacks'],
+  ['drone attacks', 'drone-attacks'],
+  ['drone attack', 'drone-attacks'],
+  ['drohnenangriffe', 'drone-attacks'],
+  ['drohnenangriff', 'drone-attacks'],
+  ['drohnen', 'drone-attacks'],
+  ['drones', 'drone-attacks'],
+  ['terror-attacks', 'terror-attacks'],
+  ['terror attacks', 'terror-attacks'],
+  ['terror attack', 'terror-attacks'],
+  ['terroranschläge', 'terror-attacks'],
+  ['terroranschlag', 'terror-attacks'],
+  ['terrorismus', 'terror-attacks'],
+  ['attentate', 'terror-attacks'],
+  ['attentat', 'terror-attacks'],
+  ['missile-tests', 'missile-tests'],
+  ['missile tests', 'missile-tests'],
+  ['raketentests', 'missile-tests'],
+  ['raketentest', 'missile-tests'],
+  ['military-convoys', 'military-convoys'],
+  ['military convoys', 'military-convoys'],
+  ['militärkonvois', 'military-convoys'],
+  ['militärkonvoi', 'military-convoys'],
+  ['militär konvois', 'military-convoys'],
+  ['campaign-trails', 'campaign-trails'],
+  ['campaign trails', 'campaign-trails'],
+  ['wahlkampfrouten', 'campaign-trails'],
+  ['wahlkampfroute', 'campaign-trails'],
+  ['secret-service', 'secret-service'],
+  ['secret service', 'secret-service'],
+  ['vip-schutz', 'secret-service'],
+  ['vip schutz', 'secret-service'],
+  ['battles', 'battles'],
+  ['ground battles', 'battles'],
+  ['schlachten', 'battles'],
+  ['gefechte', 'battles'],
+  ['bodenkämpfe', 'battles'],
+  ['bodenkaempfe', 'battles'],
+  ['bombardments', 'bombardments'],
+  ['bombardierung', 'bombardments'],
+  ['bombardierungen', 'bombardments'],
+  ['airstrikes', 'bombardments'],
+  ['luftschläge', 'bombardments'],
+  ['luftschlaege', 'bombardments'],
+  ['artillerie', 'bombardments'],
+  ['live-osint', 'live-osint'],
+  ['live osint', 'live-osint'],
+  ['osint', 'live-osint'],
+  ['telegram', 'live-osint'],
+  ['telegram news', 'live-osint'],
+  ['telegram osint', 'live-osint'],
+  ['osint feed', 'live-osint'],
+  ['osint nachrichten', 'live-osint'],
+  ['nachrichten', 'live-osint'],
+  ['live news', 'live-osint'],
 ]);
 
 const CITY_ALIASES = new Map([
@@ -289,9 +383,90 @@ export function findHistoricSpacecraft(query) {
 const TRACK_FAMILY_WORDS = [
   { layerId: 'satellites', re: /\b(satellit(en|es)?|satelit(en|es)?|satellite(s)?|satgus|norad|tle|orbit|orbits|raumstation|space station|iss|hst|jwst|tiangong|hubble|webb|sputnik|apollo|challenger)\b/i },
   { layerId: 'ais-live-vessels', re: /\b(schiff(e|es|en)?|ship(s)?|vessel(s)?|boot(e|es|en)?|boat(s)?|tanker|frachter|container|fähre|faehre|ferry|kreuzfahrt|yacht|segel|mmsi)\b/i },
-  { layerId: 'military', re: /\b(militär|militaer|military|kampfjet(s)?|fighter(s)?|bomber|abfangjäger|tarnkappen)\b/i },
+  { layerId: 'military', re: /(militär|militaer|military|kampfjet(s)?|fighter(s)?|bomber|abfangjäger|tarnkappen)/i },
   { layerId: 'flights', re: /\b(flugzeug(e|es|en)?|aircraft|plane(s)?|flieger|jet(s)?|hubschrauber|helicopter|heli|flug\b|flight(s)?|callsign|icao|airline|passagier)\b/i },
 ];
+
+/**
+ * Generic aircraft requests are category requests, not identity lookups.
+ * "Military flight", "Militärflug", "any plane", and "nearest aircraft" contain
+ * no callsign/hex to match. Every token must therefore be an aircraft-family
+ * word or an article/show/nearest modifier; a real identity such as "SWA123"
+ * or "Lufthansa 451" immediately falls through to normal identity search.
+ */
+const GENERIC_AIRCRAFT_TOKENS = new Set([
+  'a', 'an', 'any', 'some', 'the', 'show', 'me', 'zeig', 'zeige', 'mir',
+  'ein', 'eine', 'einen', 'einem', 'einer', 'irgendein', 'irgendeine',
+  'irgendeinen', 'nearest', 'next', 'nächste', 'naechste',
+  'military', 'militär', 'militaer', 'kampfjet', 'fighter', 'bomber',
+  'abfangjäger', 'abfangjaeger', 'tarnkappe',
+  'flight', 'flights', 'aircraft', 'airplane', 'plane', 'planes', 'jet', 'jets',
+  'helicopter', 'helicopters', 'heli', 'flug', 'flugzeug', 'flugzeuge',
+  'flieger', 'hubschrauber',
+]);
+const GENERIC_AIRCRAFT_KIND_TOKENS = new Set([
+  'flight', 'flights', 'aircraft', 'airplane', 'plane', 'planes', 'jet', 'jets',
+  'helicopter', 'helicopters', 'heli', 'flug', 'flugzeug', 'flugzeuge',
+  'flieger', 'hubschrauber',
+]);
+const GENERIC_MILITARY_TOKENS = new Set([
+  'military', 'militär', 'militaer', 'kampfjet', 'fighter', 'bomber',
+  'abfangjäger', 'abfangjaeger', 'tarnkappe',
+]);
+
+function genericAircraftLayerId(query) {
+  const normalized = String(query || '')
+    .toLowerCase()
+    .replace(/militärflug(?:e|s)?/g, 'militär flug')
+    .replace(/militaerflug(?:e|s)?/g, 'militaer flug')
+    .replace(/militärflugzeug(?:e|s|en)?/g, 'militär flugzeug')
+    .replace(/militaerflugzeug(?:e|s|en)?/g, 'militaer flugzeug')
+    .replace(/kampfjets?/g, 'kampfjet')
+    .replace(/fighter\s+jets?/g, 'fighter jet')
+    .replace(/[^a-zäöüß0-9]+/gi, ' ')
+    .trim();
+  if (!normalized) return null;
+  const words = normalized.split(/\s+/);
+  if (!words.length || words.some((word) => !GENERIC_AIRCRAFT_TOKENS.has(word))) return null;
+  const isAircraft = words.some((word) => GENERIC_AIRCRAFT_KIND_TOKENS.has(word));
+  const isMilitary = words.some((word) => GENERIC_MILITARY_TOKENS.has(word));
+  return isAircraft || isMilitary ? (isMilitary ? 'military' : 'flights') : null;
+}
+
+/** Nearest live aircraft descriptor for a generic category request. */
+function genericAircraftIsAirborne(candidate) {
+  const raw = candidate?.altitudeM ?? candidate?.altitudeFt ?? null;
+  const altitudeM = Number(raw);
+  if (raw !== null && raw !== undefined && Number.isFinite(altitudeM)) {
+    return altitudeM > 0;
+  }
+  // Some capped snapshots omit altitude. Treat unknown as airborne rather than
+  // making a live but alt-less feed unusable; zero/known-ground is rejected.
+  return true;
+}
+
+function nearestGenericAircraft(viewer, module) {
+  const center = getViewTargetCartesian(viewer) || viewer?.camera?.positionWC;
+  if (!center) return null;
+  if (typeof module?.getNearby === 'function') {
+    try {
+      const nearby = module.getNearby(center, Number.POSITIVE_INFINITY, 50, { includeHidden: true }) || [];
+      return nearby.find(genericAircraftIsAirborne) || null;
+    } catch {
+      // Fall through to the capped position snapshot below.
+    }
+  }
+  if (typeof module?.getAllPositions !== 'function') return null;
+  try {
+    const entries = module.getAllPositions(500) || [];
+    return entries
+      .filter((entry) => entry?.position && genericAircraftIsAirborne(entry))
+      .map((entry) => ({ ...entry, distance: Cesium.Cartesian3.distance(center, entry.position) }))
+      .sort((a, b) => a.distance - b.distance)[0] || null;
+  } catch {
+    return null;
+  }
+}
 
 /** Enable one track family on demand (same intent pattern as the fires path). */
 async function ensureTrackLayer(dataManager, layerId) {
@@ -508,6 +683,14 @@ export function createGevActionRunner({ viewer, styleManager, dataManager, scene
 
     if (name === 'select_nearest_aircraft') {
       const layerId = normalizeLayerId(args.layerId || 'flights');
+      const wantsDifferent = args.differentFromSelected === true;
+      // Capture the current contact BEFORE navigation releases the old follow.
+      // Reading it after fly_to_location would always see "nothing selected".
+      const initialTrackedInfo = dataManager.layers.get(layerId)?.module?.getTrackedInfo?.() || null;
+      const initialSelectedTarget = selectedCockpitTarget(dataManager);
+      const previousAircraftId = String(
+        (initialSelectedTarget?.layerId === layerId ? initialSelectedTarget.id : initialTrackedInfo?.icao24) || '',
+      ).trim().toLowerCase() || null;
       if (!['flights', 'military'].includes(layerId)) {
         return {
           ok: false,
@@ -609,6 +792,7 @@ export function createGevActionRunner({ viewer, styleManager, dataManager, scene
         count: Number.isFinite(Number(stats.count)) ? Number(stats.count) : null,
       };
 
+      const trackedAircraftId = previousAircraftId;
       const nearest = await createAnalystEngine(analystProviders(viewer, dataManager, {
         recordLimitByLayer: { [layerId]: Number.MAX_SAFE_INTEGER },
       })).query({
@@ -617,9 +801,20 @@ export function createGevActionRunner({ viewer, styleManager, dataManager, scene
         filters: [{ field: 'onGround', op: 'eq', value: false }],
         sortBy: 'distance',
         sortDir: 'asc',
-        limit: 1,
+        limit: wantsDifferent ? 2 : 1,
       });
-      const aircraft = nearest?.items?.[0] || null;
+      const candidates = nearest?.items || [];
+      let aircraft = candidates[0] || null;
+      let skippedCurrentlyTracked = false;
+      if (
+        wantsDifferent
+        && trackedAircraftId
+        && candidates[0]
+        && String(candidates[0].icao24 || candidates[0].id || '').trim().toLowerCase() === trackedAircraftId
+      ) {
+        skippedCurrentlyTracked = true;
+        aircraft = candidates[1] || null;
+      }
       if (!aircraft || !current()) {
         return {
           ok: false,
@@ -628,7 +823,9 @@ export function createGevActionRunner({ viewer, styleManager, dataManager, scene
           cancelled: !current(),
           error: !current()
             ? 'Nearest-aircraft selection was cancelled'
-            : (feed.state === 'unavailable'
+            : (skippedCurrentlyTracked && candidates.length === 1
+              ? `${layer.label || layerId} has no other airborne aircraft loaded in the ${location.label || 'destination'} view yet`
+              : feed.state === 'unavailable'
               ? `${layer.label || layerId} is enabled, but ${feed.source || 'its aircraft feed'} is unavailable`
               : `${layer.label || layerId} is enabled${feed.state === 'fallback' ? ` on the ${feed.source || 'fallback'} feed` : ''}, but no airborne aircraft is loaded in the ${location.label || 'destination'} view yet`),
           location,
@@ -662,6 +859,8 @@ export function createGevActionRunner({ viewer, styleManager, dataManager, scene
         layerId,
         label: selection.label,
         feed,
+        differentFromSelected: wantsDifferent,
+        skippedCurrentlyTracked,
         aircraft: {
           id: stableAircraftId,
           callsign: aircraft.callsign || null,
@@ -1049,6 +1248,36 @@ export function createGevActionRunner({ viewer, styleManager, dataManager, scene
       return clearAnnotations(annotations);
     }
 
+    if (name === 'fly_to_nearest_tactical_target') {
+      interruptCameraMotion('nav:fly_to_nearest_tactical_target');
+      if (viewer.trackedEntity) stopAllTracking(viewer, dataManager);
+      return flyToNearestTacticalTarget(viewer, dataManager, args);
+    }
+
+    if (name === 'mark_tactical_impact_zone') {
+      if (args.zoomIn !== false) {
+        interruptCameraMotion('nav:mark_tactical_impact_zone');
+        if (viewer.trackedEntity) stopAllTracking(viewer, dataManager);
+      }
+      return markTacticalImpactZone(viewer, annotations, dataManager, args);
+    }
+
+    if (name === 'describe_tactical_event') {
+      return describeTacticalEvent(viewer, dataManager, args);
+    }
+
+    if (name === 'query_osint_news' || name === 'query_osint' || name === 'osint_news' || name === 'telegram_news') {
+      return queryOsintNews(viewer, dataManager, args);
+    }
+
+    if (name === 'query_financial_market_impact' || name === 'get_market_impact_summary' || name === 'query_markets' || name === 'query_market_intel') {
+      return queryFinancialMarketImpact(viewer, dataManager, args);
+    }
+
+    if (name === 'search_and_forecast_asset' || name === 'query_asset_prognosis' || name === 'forecast_asset' || name === 'get_stock_forecast') {
+      return queryAssetPrognosis(viewer, dataManager, args);
+    }
+
     throw new Error(`Unknown GEV tool: ${name}`);
   };
 }
@@ -1279,6 +1508,32 @@ export function findCctvCameraMatch(cams, rawQuery) {
   m = cams.find((c) => c.city && q.includes(String(c.city).toLowerCase()));
   if (m) return m;
 
+  // 7. Multilingual city & landmark synonyms (e.g. Tokio -> Tokyo, Eiffelturm -> Eiffel Tower)
+  const SYNONYMS = {
+    'tokio': 'tokyo',
+    'singapur': 'singapore',
+    'genf': 'geneva',
+    'geneve': 'geneva',
+    'eiffelturm': 'eiffel',
+    'weisses haus': 'white house',
+    'weisse haus': 'white house',
+    'weissen haus': 'white house',
+    'kapitol': 'capitol',
+    'opernhaus': 'opera',
+    'oper': 'opera',
+  };
+  for (const [alias, canonical] of Object.entries(SYNONYMS)) {
+    if (q.includes(alias) || clean.includes(alias)) {
+      m = cams.find((c) => {
+        const name = String(c.name || '').toLowerCase();
+        const city = String(c.city || '').toLowerCase();
+        const cityId = String(c.cityId || '').toLowerCase();
+        return name.includes(canonical) || city.includes(canonical) || cityId.includes(canonical);
+      });
+      if (m) return m;
+    }
+  }
+
   return null;
 }
 
@@ -1323,13 +1578,23 @@ export async function controlCctv(dataManager, args = {}, styleManager = null, v
     let match = findCctvCameraMatch(cams, query);
     if (!match && viewer) {
       try {
-        await flyToLocation(viewer, { query: args.cameraQuery, viewMode: 'close' });
+        await flyToLocation(viewer, { query: args.cameraQuery });
         cams = cctv.getUIState?.()?.cameras || [];
         match = findCctvCameraMatch(cams, query);
         if (!match && typeof cctv.focusNearest === 'function') {
-          const nearestId = cctv.focusNearest({ focus: false });
-          if (nearestId) {
-            match = cams.find((c) => c.id === nearestId) || { id: nearestId, name: nearestId };
+          const carto = viewer.camera?.positionCartographic;
+          if (carto) {
+            const vLat = Cesium.Math.toDegrees(carto.latitude);
+            const vLon = Cesium.Math.toDegrees(carto.longitude);
+            const hasNearbyCam = cams.some((c) => (
+              Number.isFinite(c.lat) && Number.isFinite(c.lon) && haversineKm(vLat, vLon, c.lat, c.lon) <= 80
+            ));
+            if (hasNearbyCam) {
+              const nearestId = cctv.focusNearest({ focus: false });
+              if (nearestId) {
+                match = cams.find((c) => c.id === nearestId) || { id: nearestId, name: nearestId };
+              }
+            }
           }
         }
       } catch {
@@ -1408,6 +1673,51 @@ export async function controlCctv(dataManager, args = {}, styleManager = null, v
     const next = typeof args.enabled === 'boolean' ? args.enabled : !current[key];
     dataManager.setLayerParams('cctv', { [key]: next }, { origin: 'voice' });
     return { ok: true, action: 'control_cctv', ...summarize() };
+  }
+  if (action === 'analyze') {
+    let match = null;
+    let cams = cctv.getUIState?.()?.cameras || [];
+    const query = String(args.cameraQuery || args.locationQuery || args.query || '').trim().toLowerCase();
+    if (query) {
+      match = findCctvCameraMatch(cams, query);
+    }
+    if (!match) {
+      const activeId = cctv.getActiveCameraId?.();
+      match = cams.find((c) => c.id === activeId) || cams[0];
+    }
+    if (!match) {
+      return { ok: false, action: 'control_cctv', error: 'No camera available for analysis', ...summarize() };
+    }
+    cctv.selectCamera?.(match.id);
+    cctv.focusCamera?.(match.id, 1.8);
+
+    let brief = '';
+    let analyst = 'context';
+    try {
+      const resp = await fetch(`/api/cctv/analyze/${encodeURIComponent(match.id)}?lang=${args.lang || 'de'}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        brief = data.brief || '';
+        analyst = data.analyst || 'context';
+      }
+    } catch {
+      // ignore network fetch failures in offline/mock test environments
+    }
+    if (!brief) {
+      brief = `Kamera ${match.name} in ${match.city || 'Schweiz'} beobachtet Richtung ${match.headingDeg || 0}°.`;
+    }
+    return {
+      ok: true,
+      action: 'control_cctv',
+      subaction: 'analyze',
+      cameraId: match.id,
+      cameraName: match.name,
+      city: match.city,
+      analysis: brief,
+      analyst,
+      speech: brief,
+      ...summarize(),
+    };
   }
   throw new Error(`Unknown CCTV action: ${args.action || 'missing'}`);
 }
@@ -2017,6 +2327,219 @@ async function trackEntity(viewer, dataManager, styleManager, args = {}) {
     };
   }
 
+  /**
+ * Generic satellite phrases are category requests, not catalog-name lookups.
+ * Keep this strict: every token must be an article/nearest modifier or the
+ * satellite family word, so a real identity such as "ISS" or "Hubble" still
+ * goes through the normal catalog search.
+ */
+const GENERIC_SATELLITE_TOKENS = new Set([
+  'a', 'an', 'any', 'some', 'the', 'show', 'me', 'zeig', 'zeige', 'mir',
+  'ein', 'eine', 'einen', 'einem', 'einer', 'irgendein', 'irgendeine',
+  'irgendeinen', 'nearest', 'next', 'nächste', 'naechste',
+  'satellite', 'satellites', 'satellit', 'satelliten', 'satelit',
+  'sateliten', 'satelites', 'raumstation',
+  // "ein anderer Satellit" / "another satellite" — a follow-up request that
+  // must skip the currently followed contact instead of re-picking it.
+  'ander', 'anderer', 'andere', 'anderen', 'anderem', 'anderes',
+  'another', 'other', 'different',
+]);
+
+function genericSatelliteQuery(query) {
+  const normalized = String(query || '')
+    .toLowerCase()
+    .replace(/[^a-zäöüß0-9]+/gi, ' ')
+    .trim();
+  if (!normalized) return false;
+  const words = normalized.split(/\s+/);
+  return words.length > 0
+    && words.some((word) => /^(?:satellit|satelit|satellite)(?:e|en|es|s)?$/.test(word))
+    && words.every((word) => GENERIC_SATELLITE_TOKENS.has(word));
+}
+
+/** Nearest currently rendered satellite for a generic category request. */
+function nearestGenericSatellite(viewer, module, { excludeNoradId = null } = {}) {
+  const center = getViewTargetCartesian(viewer) || viewer?.camera?.positionWC;
+  if (!center || typeof module?.getAllPositions !== 'function') return null;
+  try {
+    const entries = module.getAllPositions(500) || [];
+    return entries
+      .filter((entry) => entry?.position)
+      .filter((entry) => !(excludeNoradId != null && Number(entry.id) === Number(excludeNoradId)))
+      .map((entry) => ({ ...entry, distance: Cesium.Cartesian3.distance(center, entry.position) }))
+      .sort((a, b) => a.distance - b.distance)[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+// A generic satellite phrase ("satellite", "einen Sateliten") is not a
+// catalog-name lookup. Enable satellites, take the nearest rendered object,
+// and follow it — the same authority the aircraft path already has.
+if (genericSatelliteQuery(query)) {
+  if (!dataManager.isEnabled('satellites')) await ensureTrackLayer(dataManager, 'satellites');
+  if (!dataManager.isEnabled('satellites')) {
+    return {
+      ok: false,
+      action: 'track_entity',
+      query,
+      layerId: 'satellites',
+      kind: 'satellite',
+      error: 'The satellites layer could not be enabled',
+    };
+  }
+  const module = dataManager.layers.get('satellites')?.module;
+  if (!module) {
+    return {
+      ok: false,
+      action: 'track_entity',
+      query,
+      layerId: 'satellites',
+      kind: 'satellite',
+      error: 'Satellite tracking is unavailable',
+    };
+  }
+  // "ein anderer Satellit" is a follow-up request: capture the currently
+  // followed contact first. The camera usually sits ON that satellite, so
+  // the plain nearest pick would return the same contact every time — skip
+  // it, exactly like the aircraft path skips the tracked aircraft.
+  const previousNoradId = Number(module.getTrackedInfo?.()?.noradId);
+  const wantsDifferent = args.differentFromSelected === true
+    || /\b(?:ander|another|different|other)\w*\b/i.test(query);
+  let nearest = nearestGenericSatellite(viewer, module);
+  let skippedCurrentlyTracked = false;
+  const skipFollowedPick = () => {
+    if (
+      !wantsDifferent
+      || !Number.isFinite(previousNoradId)
+      || !nearest
+      || Number(nearest.id) !== previousNoradId
+    ) return;
+    skippedCurrentlyTracked = true;
+    nearest = nearestGenericSatellite(viewer, module, { excludeNoradId: previousNoradId });
+  };
+  skipFollowedPick();
+  if (!nearest && typeof dataManager.refreshLayer === 'function') {
+    try {
+      await dataManager.refreshLayer('satellites');
+    } catch {
+      // The empty-feed error below remains the honest outcome.
+    }
+    skippedCurrentlyTracked = false;
+    nearest = nearestGenericSatellite(viewer, module);
+    skipFollowedPick();
+  }
+  if (!nearest) {
+    return {
+      ok: false,
+      action: 'track_entity',
+      query,
+      layerId: 'satellites',
+      kind: 'satellite',
+      ...(skippedCurrentlyTracked ? { skippedCurrentlyTracked } : {}),
+      error: skippedCurrentlyTracked
+        ? 'The followed satellite is the only rendered contact — no other satellite is loaded yet'
+        : 'No satellites are loaded yet',
+    };
+  }
+  const identity = Number(nearest.id);
+  const found = module.findByQuery?.(String(identity)) || {
+    noradId: identity,
+    name: nearest.label || String(identity),
+    position: nearest.position,
+    latitude: nearest.latitude,
+    longitude: nearest.longitude,
+    altitudeM: nearest.altitudeM,
+  };
+  return runManagedVoiceNavigation(styleManager, 'satellite', 'track_entity', () => {
+    const trackedOk = !!module.trackById?.(found.noradId ?? identity, { origin: 'voice' });
+    return {
+      ok: trackedOk,
+      action: 'track_entity',
+      layerId: 'satellites',
+      kind: 'satellite',
+      selection: 'nearest',
+      genericQuery: true,
+      ...(wantsDifferent ? { differentFromSelected: true } : {}),
+      skippedCurrentlyTracked,
+      label: formatTrackedEntityLabel(found, query),
+      latitude: found.latitude ?? nearest.latitude ?? null,
+      longitude: found.longitude ?? nearest.longitude ?? null,
+      altitudeM: Number.isFinite(found.altitudeM) ? Math.round(found.altitudeM) : null,
+      error: trackedOk ? null : 'The nearest satellite was found but tracking failed',
+    };
+  });
+}
+
+// Small models still sometimes send a category phrase to track_entity even
+  // when the router was asked for a specific identity. Treat it as the user
+  // intended: enable that family, take the nearest live contact, and follow it.
+  const genericLayerId = ['flights', 'military'].includes(forcedLayer || '')
+    ? forcedLayer
+    : genericAircraftLayerId(query);
+  if (genericLayerId) {
+    if (!dataManager.isEnabled(genericLayerId)) await ensureTrackLayer(dataManager, genericLayerId);
+    if (!dataManager.isEnabled(genericLayerId)) {
+      return {
+        ok: false,
+        action: 'track_entity',
+        query,
+        layerId: genericLayerId,
+        error: `The ${genericLayerId} layer could not be enabled`,
+      };
+    }
+    const family = TRACKABLE_FAMILIES.find((item) => item.layerId === genericLayerId);
+    const module = dataManager.layers.get(genericLayerId)?.module;
+    if (!family || !module) {
+      return {
+        ok: false,
+        action: 'track_entity',
+        query,
+        layerId: genericLayerId,
+        error: `${genericLayerId} tracking is unavailable`,
+      };
+    }
+    let nearest = nearestGenericAircraft(viewer, module);
+    if (!nearest && typeof dataManager.refreshLayer === 'function') {
+      try {
+        await dataManager.refreshLayer(genericLayerId);
+      } catch {
+        // The empty-feed error below remains the honest outcome.
+      }
+      nearest = nearestGenericAircraft(viewer, module);
+    }
+    if (!nearest) {
+      return {
+        ok: false,
+        action: 'track_entity',
+        query,
+        layerId: genericLayerId,
+        kind: family.kind,
+        error: genericLayerId === 'military'
+          ? 'No military aircraft are loaded in the live feed yet'
+          : 'No aircraft are loaded in the live feed yet',
+      };
+    }
+    const identity = nearest.icao24 || nearest.id;
+    const found = module.findByQuery?.(String(identity || '')) || nearest;
+    return runManagedVoiceNavigation(styleManager, family.kind, 'track_entity', () => {
+      const trackedOk = !!module.trackById?.(found.icao24 ?? identity, { origin: 'voice' });
+      return {
+        ok: trackedOk,
+        action: 'track_entity',
+        layerId: genericLayerId,
+        kind: family.kind,
+        selection: 'nearest',
+        genericQuery: true,
+        label: formatTrackedEntityLabel(found, query),
+        latitude: found.latitude ?? nearest.latitude ?? null,
+        longitude: found.longitude ?? nearest.longitude ?? null,
+        altitudeM: Number.isFinite(found.altitudeM) ? Math.round(found.altitudeM) : null,
+        error: trackedOk ? null : 'The nearest aircraft was found but tracking failed',
+      };
+    });
+  }
+
   const disabledNote = skippedDisabled.length ? ` (disabled layers skipped: ${skippedDisabled.join(', ')})` : '';
   const triedNote = effectQuery !== query ? ` (tried "${effectQuery}")` : '';
   return { ok: false, action: 'track_entity', query, error: `Nothing matched "${query}"${triedNote}${disabledNote}` };
@@ -2590,9 +3113,10 @@ async function flyToRequestedLocation(viewer, args, {
   };
 
   if (locationId) {
+    const defaultRange = args.viewMode === 'close' ? 2500 : (args.viewMode === 'overview' ? 35000 : 12000);
     const result = immediate(() => flyToPresetLocation(viewer, locationId, {
       ...(rangeM || args.viewMode === 'close'
-        ? { range: rangeM || 250 }
+        ? { range: rangeM || defaultRange }
         : { viewMode: 'overview' }),
       duration: 2.2,
       onStart: immediateOnStart,
@@ -2616,8 +3140,10 @@ async function flyToRequestedLocation(viewer, args, {
   const latitude = queryCoords?.latitude ?? Number(args.latitude);
   const longitude = queryCoords?.longitude ?? Number(args.longitude);
   if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+    const defaultRange = args.viewMode === 'close' ? 2500 : (args.viewMode === 'overview' ? 35000 : 12000);
+    const resolvedRange = rangeM || defaultRange;
     const result = immediate(() => flyToLandmark(viewer, latitude, longitude, {
-      range: rangeM || 250,
+      range: resolvedRange,
       pitch: -35,
       heading: 0,
       buildingHeight: 0,
@@ -2632,8 +3158,8 @@ async function flyToRequestedLocation(viewer, args, {
       latitude,
       longitude,
       label: `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`,
-      rangeM: Math.round(rangeM || 250),
-      navigationMode: rangeM ? 'explicit-range' : 'close-coordinate',
+      rangeM: Math.round(resolvedRange),
+      navigationMode: rangeM ? 'explicit-range' : (args.viewMode === 'close' ? 'close-coordinate' : 'coordinate-overview'),
     };
     return afterArrival(response, response.label);
   }
@@ -2975,6 +3501,8 @@ function insertNearestRecord(records, candidate, limit) {
 
 async function getSceneContext(viewer, styleManager, dataManager, viewTarget = null) {
   const cartographic = Cesium.Cartographic.fromCartesian(viewer.camera.positionWC);
+  const camLat = Number(Cesium.Math.toDegrees(cartographic.latitude).toFixed(6));
+  const camLon = Number(Cesium.Math.toDegrees(cartographic.longitude).toFixed(6));
   const basemap = await getBasemapContext(viewer, viewTarget);
   const enabledLayers = dataManager.getAll()
     .filter((layer) => layer.enabled)
@@ -2984,15 +3512,27 @@ async function getSceneContext(viewer, styleManager, dataManager, viewTarget = n
       count: layer.stats?.count || 0,
       source: layer.source,
     }));
+  const tacticalIntel = nearbyTacticalIntel(viewer, dataManager, camLat, camLon, 200);
+  const osintLayer = dataManager?.layers?.get('live-osint')?.module;
+  const recentOsint = (osintLayer?.getRecords ? osintLayer.getRecords() : SEED_OSINT_RECORDS)
+    .slice(0, 3)
+    .map((r) => ({
+      title: r.title,
+      location: r.locationName,
+      weapon: r.weaponSystem,
+      summary: r.summary,
+    }));
   return {
     camera: {
-      latitude: Number(Cesium.Math.toDegrees(cartographic.latitude).toFixed(6)),
-      longitude: Number(Cesium.Math.toDegrees(cartographic.longitude).toFixed(6)),
+      latitude: camLat,
+      longitude: camLon,
       heightM: Math.round(cartographic.height),
     },
     basemap,
     style: styleManager.activeStyle || 'normal',
     enabledLayers,
+    ...(tacticalIntel.length > 0 ? { tacticalIntel } : {}),
+    ...(recentOsint.length > 0 ? { recentOsint } : {}),
   };
 }
 
@@ -3147,6 +3687,428 @@ function haversineKm(lat1, lon1, lat2, lon2) {
     Math.sin(dLon / 2) * Math.sin(dLon / 2);
   return 2 * radiusKm * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
+
+export function getTacticalRecordCoordinates(record) {
+  if (!record) return null;
+  const lat = record.target?.lat ?? record.location?.lat ?? record.center?.lat ??
+              record.impactArea?.lat ?? record.currentPosition?.lat ?? record.currentStop?.lat ??
+              record.lat ?? record.latitude;
+  const lon = record.target?.lon ?? record.location?.lon ?? record.center?.lon ??
+              record.impactArea?.lon ?? record.currentPosition?.lon ?? record.currentStop?.lon ??
+              record.lon ?? record.longitude;
+  if (Number.isFinite(lat) && Number.isFinite(lon)) {
+    return { lat, lon };
+  }
+  return null;
+}
+
+export function getAllTacticalRecords(dataManager = null) {
+  const records = [];
+  const tacticalLayerIds = [
+    'drone-attacks', 'terror-attacks', 'missile-strikes', 'bombardments',
+    'battles', 'conflicts', 'frontlines', 'missile-tests',
+    'military-convoys', 'campaign-trails', 'secret-service', 'live-osint',
+  ];
+
+  if (dataManager?.layers) {
+    for (const layerId of tacticalLayerIds) {
+      const entry = dataManager.layers.get(layerId);
+      const mod = entry?.module;
+      if (mod?.getRecords) {
+        try {
+          const recs = mod.getRecords();
+          if (Array.isArray(recs)) {
+            for (const r of recs) {
+              records.push({ ...r, category: r.category || layerId });
+            }
+          }
+        } catch { /* best effort */ }
+      }
+    }
+  }
+
+  if (records.length === 0) {
+    for (const r of (SEED_DRONE_ATTACKS || [])) records.push({ ...r, category: 'drone-attacks' });
+    for (const r of (SEED_TERROR_ATTACKS || [])) records.push({ ...r, category: 'terror-attacks' });
+    for (const r of (SEED_MISSILE_STRIKES || [])) records.push({ ...r, category: 'missile-strikes' });
+    for (const r of (SEED_BOMBARDMENTS || [])) records.push({ ...r, category: 'bombardments' });
+    for (const r of (SEED_BATTLES || [])) records.push({ ...r, category: 'battles' });
+    for (const r of (SEED_CONFLICT_ZONES || [])) records.push({ ...r, category: 'conflicts' });
+    for (const r of (SEED_MISSILE_TESTS || [])) records.push({ ...r, category: 'missile-tests' });
+    for (const r of (SEED_MILITARY_CONVOYS || [])) records.push({ ...r, category: 'military-convoys' });
+    for (const r of (SEED_CAMPAIGN_TRAILS || [])) records.push({ ...r, category: 'campaign-trails' });
+    for (const r of (SEED_SECRET_SERVICE_OPS || [])) records.push({ ...r, category: 'secret-service' });
+    for (const r of (SEED_OSINT_RECORDS || [])) records.push({ ...r, category: 'live-osint' });
+  }
+
+  return records;
+}
+
+export function nearbyTacticalIntel(viewer, dataManager, latitude, longitude, maxDistanceKm = 200) {
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return [];
+  const records = getAllTacticalRecords(dataManager);
+  const hits = [];
+
+  for (const r of records) {
+    const coords = getTacticalRecordCoordinates(r);
+    if (!coords) continue;
+    const distanceKm = haversineKm(latitude, longitude, coords.lat, coords.lon);
+    if (distanceKm <= maxDistanceKm) {
+      hits.push({
+        id: r.id,
+        category: r.category || 'tactical-intel',
+        title: r.title || r.name,
+        type: r.type || 'Militärisches Ziel / Angriff',
+        theater: r.theater || r.region,
+        operator: r.operator || r.belligerents || r.perpetrator,
+        target: r.target?.name || r.location?.name || r.name,
+        weaponSystem: r.weaponSystem || r.weaponUsed || r.droneType,
+        droneType: r.droneType,
+        status: r.status,
+        summary: r.summary,
+        impactRadiusM: r.impactRadiusM || 1500,
+        impactPointsCount: Array.isArray(r.impactPoints) ? r.impactPoints.length : 0,
+        distanceKm: Number(distanceKm.toFixed(2)),
+        latitude: coords.lat,
+        longitude: coords.lon,
+        rawRecord: r,
+      });
+    }
+  }
+
+  hits.sort((a, b) => a.distanceKm - b.distanceKm);
+  return hits.slice(0, 5);
+}
+
+export function generateCircleRing(lat, lon, radiusM, numPoints = 36) {
+  const points = [];
+  const R = 6378137;
+  const dLat = radiusM / R;
+  const dLon = radiusM / (R * Math.cos((Math.PI * lat) / 180));
+  for (let i = 0; i <= numPoints; i++) {
+    const theta = (i * 2 * Math.PI) / numPoints;
+    const pLat = lat + (dLat * (180 / Math.PI)) * Math.sin(theta);
+    const pLon = lon + (dLon * (180 / Math.PI)) * Math.cos(theta);
+    points.push([Number(pLon.toFixed(6)), Number(pLat.toFixed(6))]);
+  }
+  return points;
+}
+
+export async function flyToNearestTacticalTarget(viewer, dataManager, args = {}) {
+  let camLat = 50.45;
+  let camLon = 30.52;
+  if (viewer?.camera?.positionWC) {
+    const cartographic = Cesium.Cartographic.fromCartesian(viewer.camera.positionWC);
+    if (cartographic) {
+      camLat = Cesium.Math.toDegrees(cartographic.latitude);
+      camLon = Cesium.Math.toDegrees(cartographic.longitude);
+    }
+  }
+
+  const category = args.category || (dataManager?.isEnabled?.('drone-attacks') ? 'drone-attacks' : null);
+  let all = getAllTacticalRecords(dataManager);
+  if (category) {
+    const filtered = all.filter(r => r.category === category || r.id?.startsWith(category.slice(0, 5)));
+    if (filtered.length) all = filtered;
+  }
+
+  let nearest = null;
+  let minDistance = Infinity;
+  for (const r of all) {
+    const coords = getTacticalRecordCoordinates(r);
+    if (!coords) continue;
+    const dist = haversineKm(camLat, camLon, coords.lat, coords.lon);
+    if (dist < minDistance) {
+      minDistance = dist;
+      nearest = { record: r, coords, dist };
+    }
+  }
+
+  if (!nearest && all.length > 0) {
+    const coords = getTacticalRecordCoordinates(all[0]);
+    if (coords) nearest = { record: all[0], coords, dist: 0 };
+  }
+
+  if (!nearest) {
+    return { ok: false, action: 'fly_to_nearest_tactical_target', error: 'No tactical targets found.' };
+  }
+
+  const { record, coords } = nearest;
+  if (record.category && dataManager?.enableLayer) {
+    try { dataManager.enableLayer(record.category); } catch { /* best effort */ }
+  }
+
+  const rangeM = record.impactRadiusM ? Math.max(record.impactRadiusM * 3.5, 6000) : 12000;
+  if (viewer) {
+    flyToLandmark(viewer, coords.lat, coords.lon, {
+      range: rangeM,
+      pitch: -35,
+      heading: 0,
+      duration: 2.2,
+    });
+  }
+
+  return {
+    ok: true,
+    action: 'fly_to_nearest_tactical_target',
+    target: record.title || record.name,
+    category: record.category,
+    latitude: coords.lat,
+    longitude: coords.lon,
+    rangeM,
+    summary: record.summary,
+    distanceKm: Number(minDistance.toFixed(2)),
+  };
+}
+
+export async function markTacticalImpactZone(viewer, annotations, dataManager, args = {}) {
+  let camLat = 50.8;
+  let camLon = 36.5;
+  if (viewer?.camera?.positionWC) {
+    const cartographic = Cesium.Cartographic.fromCartesian(viewer.camera.positionWC);
+    if (cartographic) {
+      camLat = Cesium.Math.toDegrees(cartographic.latitude);
+      camLon = Cesium.Math.toDegrees(cartographic.longitude);
+    }
+  }
+
+  let targetLat = Number(args.latitude);
+  let targetLon = Number(args.longitude);
+  let event = null;
+
+  if (!Number.isFinite(targetLat) || !Number.isFinite(targetLon)) {
+    const nearby = nearbyTacticalIntel(viewer, dataManager, camLat, camLon, 250);
+    if (nearby.length > 0) {
+      event = nearby[0];
+      targetLat = event.latitude;
+      targetLon = event.longitude;
+    } else {
+      targetLat = camLat;
+      targetLon = camLon;
+    }
+  } else {
+    const nearby = nearbyTacticalIntel(viewer, dataManager, targetLat, targetLon, 50);
+    if (nearby.length > 0) event = nearby[0];
+  }
+
+  const radiusM = Number(args.radiusM) || event?.impactRadiusM || 1500;
+  const label = args.label || (event ? `Einschlagszone: ${event.title}` : 'Betroffenes Gebiet');
+  const ring = generateCircleRing(targetLat, targetLon, radiusM);
+
+  if (annotations && typeof annotations.annotate === 'function') {
+    await annotations.annotate([{
+      type: 'area',
+      latitude: targetLat,
+      longitude: targetLon,
+      ring,
+      label,
+      color: 'cyan',
+      persist: true,
+    }], { flyTo: false, persist: true });
+  }
+
+  if (args.zoomIn !== false && viewer) {
+    const inspectionRange = Math.max(radiusM * 2.2, 2500);
+    flyToLandmark(viewer, targetLat, targetLon, {
+      range: inspectionRange,
+      pitch: -40,
+      heading: 0,
+      duration: 2.0,
+    });
+  }
+
+  return {
+    ok: true,
+    action: 'mark_tactical_impact_zone',
+    latitude: targetLat,
+    longitude: targetLon,
+    radiusM,
+    label,
+    zoomedIn: args.zoomIn !== false,
+    event: event ? {
+      title: event.title,
+      category: event.category,
+      weaponSystem: event.weaponSystem,
+      status: event.status,
+      summary: event.summary,
+    } : null,
+  };
+}
+
+export async function describeTacticalEvent(viewer, dataManager, args = {}) {
+  let camLat = 50.8;
+  let camLon = 36.5;
+  if (viewer?.camera?.positionWC) {
+    const cartographic = Cesium.Cartographic.fromCartesian(viewer.camera.positionWC);
+    if (cartographic) {
+      camLat = Cesium.Math.toDegrees(cartographic.latitude);
+      camLon = Cesium.Math.toDegrees(cartographic.longitude);
+    }
+  }
+
+  const lat = Number(args.latitude) || camLat;
+  const lon = Number(args.longitude) || camLon;
+
+  const nearby = nearbyTacticalIntel(viewer, dataManager, lat, lon, 250);
+  if (!nearby.length) {
+    return {
+      ok: false,
+      action: 'describe_tactical_event',
+      error: 'Kein taktisches Ereignis in diesem Sektor erfasst.',
+      sitrepDe: 'In diesem Sektor liegen aktuell keine erfassten Angriffs- oder Gefechtsberichte vor.',
+      sitrepEn: 'No recorded tactical strikes or combat events in this sector.',
+    };
+  }
+
+  const ev = nearby[0];
+  if (typeof window !== 'undefined' && ev.rawRecord) {
+    try {
+      showTacticalSitrep(ev.rawRecord);
+    } catch { /* best effort */ }
+  }
+
+  const sitrepDe = `Lageaufklärung: ${ev.title}. Drohne/Waffensystem: ${ev.weaponSystem || ev.droneType || 'Unbekannt'}. Betreiber: ${ev.operator || 'Unbekannt'}. Status: ${ev.status || 'Bestätigt'}. ${ev.summary}`;
+  const sitrepEn = `Sitrep: ${ev.title}. System: ${ev.weaponSystem || ev.droneType || 'Unknown'}. Operator: ${ev.operator || 'Unknown'}. Status: ${ev.status || 'Confirmed'}. ${ev.summary}`;
+
+  return {
+    ok: true,
+    action: 'describe_tactical_event',
+    event: ev,
+    sitrepDe,
+    sitrepEn,
+  };
+}
+
+export async function queryOsintNews(viewer, dataManager, args = {}) {
+  const query = String(args.query || args.topic || args.location || '').trim().toLowerCase();
+  const limit = Math.min(10, Math.max(1, Number(args.limit) || 5));
+
+  const osintLayer = dataManager?.layers?.get('live-osint')?.module;
+  let allRecords = osintLayer?.getRecords ? osintLayer.getRecords() : SEED_OSINT_RECORDS;
+
+  if (!allRecords || allRecords.length === 0) {
+    allRecords = SEED_OSINT_RECORDS;
+  }
+
+  let matches = allRecords;
+  if (query) {
+    matches = allRecords.filter((r) => {
+      const hay = `${r.title || ''} ${r.locationName || ''} ${r.summary || ''} ${r.weaponSystem || ''} ${r.theater || ''} ${r.channel || ''}`.toLowerCase();
+      return hay.includes(query);
+    });
+    if (matches.length === 0) matches = allRecords;
+  }
+
+  const topItems = matches.slice(0, limit);
+  const headlines = topItems.map((item, idx) => `${idx + 1}. [${item.locationName} // ${item.weaponSystem || item.category}]: ${item.summary}`).join('\n');
+  const sitrepDe = topItems.length > 0
+    ? `Aktuelle Telegram OSINT-Lageaufklärung (${topItems.length} Meldungen):\n${headlines}`
+    : 'Keine aktuellen OSINT-Meldungen zu dieser Suchanfrage vorhanden.';
+
+  return {
+    ok: true,
+    action: 'query_osint_news',
+    count: topItems.length,
+    query: query || 'all',
+    items: topItems,
+    sitrepDe,
+  };
+}
+
+export async function queryFinancialMarketImpact(viewer, dataManager, args = {}) {
+  try {
+    const quotes = await fetchLiveMarketQuotes();
+    const osintLayer = dataManager?.layers?.get('live-osint')?.module;
+    const records = osintLayer?.getRecords ? osintLayer.getRecords() : SEED_OSINT_RECORDS;
+    const analysis = analyzeGeopoliticalMarketImpact(records, quotes);
+
+    const brent = analysis.quotes.find((q) => q.symbol === 'BZ=F');
+    const gold = analysis.quotes.find((q) => q.symbol === 'GC=F');
+    const sp = analysis.quotes.find((q) => q.symbol === '^GSPC');
+    const vix = analysis.quotes.find((q) => q.symbol === '^VIX');
+    const rhm = analysis.quotes.find((q) => q.symbol === 'RHM.DE');
+
+    const rawFocus = String(args.query || args.focus || args.date || '').trim();
+    const breakoutData = generateTopBreakoutStocks(rawFocus, records);
+
+    const breakoutLines = breakoutData.candidates.slice(0, 3).map((c, i) =>
+      `🚀 ${i + 1}. ${c.name} (${c.symbol} · ${c.price})\n`
+      + `   • Aufwärtspotenzial: ${c.upsidePct} (Zielkorridor: ${c.targetCorridor}) · Rating: ${c.rating}\n`
+      + `   • Katalysator: ${c.catalyst}\n`
+      + `   • Geopolitischer Hebel: ${c.geopoliticalLeverage}`
+    ).join('\n\n');
+
+    const topCausal = analysis.causalImpacts.slice(0, 2).map((c) => `• ${c.sector} (${c.sentiment}): ${c.headline}`).join('\n');
+
+    const sitrepDe = `Abacus Ausbruchs-Prognose — Top-Aktien (${breakoutData.focusDate}):\n\n`
+      + `${breakoutLines}\n\n`
+      + `📊 Geopolitisches Rohstoff- & Marktumfeld:\n`
+      + `• Rohstoffe & Indizes: Brent $${brent?.price || '95.94'} (${brent?.changePct || '0%'}), Gold $${gold?.price || '4388'}/oz, S&P 500 ${sp?.price || '7764'}, VIX ${vix?.price || '14.8'}, Rheinmetall €${rhm?.price || '1010'}.\n`
+      + `${topCausal}`;
+
+    if (typeof window !== 'undefined' && window.__godsEyeView?.openGlobalMarketSitrepModal) {
+      window.__godsEyeView.openGlobalMarketSitrepModal();
+    }
+
+    return {
+      ok: true,
+      action: 'query_financial_market_impact',
+      quotes: analysis.quotes,
+      causalImpacts: analysis.causalImpacts,
+      regionalSummary: analysis.regionalSummary,
+      sitrepDe,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      action: 'query_financial_market_impact',
+      error: String(err?.message || err),
+      sitrepDe: 'Marktdaten konnten derzeit nicht geladen werden.',
+    };
+  }
+}
+
+export async function queryAssetPrognosis(viewer, dataManager, args = {}) {
+  const query = args.query || args.symbol || args.asset || args.ticker || 'Rheinmetall';
+  try {
+    const searchResults = await searchFinancialSymbols(query);
+    const topAsset = searchResults[0] || { symbol: query.toUpperCase(), name: query };
+    const assetInfo = await fetchAssetDeepDive(topAsset.symbol);
+    const osintLayer = dataManager?.layers?.get('live-osint')?.module;
+    const records = osintLayer?.getRecords ? osintLayer.getRecords() : SEED_OSINT_RECORDS;
+    const prognosis = generateAssetPrognosis(assetInfo, records);
+
+    if (typeof window !== 'undefined' && window.__godsEyeView?.openAssetDeepDive) {
+      window.__godsEyeView.openAssetDeepDive(topAsset.symbol);
+    }
+
+    const sitrepDe = `In-Depth Prognose für ${assetInfo.name} (${assetInfo.symbol}):\n`
+      + `Aktueller Kurs: ${assetInfo.price} ${assetInfo.currency} (${assetInfo.changePct})\n`
+      + `Trend & Allokation: ${prognosis.trend} · ${prognosis.recommendation}\n`
+      + `Zielkorridor (1–3 Monate): ${prognosis.targetCorridor} (Konfidenz: ${prognosis.confidence}%)\n`
+      + `Geopolitischer Korrelations-Index: ${prognosis.correlationIndex}\n\n`
+      + `Makro-These: ${prognosis.macroHeadline}\n${prognosis.thesis}\n\n`
+      + `Bull-Case: ${prognosis.bullCase}\n`
+      + `Bear-Case: ${prognosis.bearCase}`;
+
+    return {
+      ok: true,
+      action: 'search_and_forecast_asset',
+      asset: assetInfo,
+      prognosis,
+      sitrepDe,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      action: 'search_and_forecast_asset',
+      error: String(err?.message || err),
+      sitrepDe: `Prognose für "${query}" konnte nicht erstellt werden: ${err?.message || 'Asset unbekannt'}`,
+    };
+  }
+}
+
+
 
 function coarseBasemapPlace(viewScale, latitude, longitude, inferredCountry = null) {
   if (viewScale === 'global') {

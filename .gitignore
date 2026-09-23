@@ -1,10 +1,14 @@
 node_modules
 dist
 .env
+.env.*
+!.env.example
 *.log
 screenshots/
 qa-shots/
 output/
+scratch/
+scripts/*.png
 .gev-logs/
 .gev-cache/
 .DS_Store

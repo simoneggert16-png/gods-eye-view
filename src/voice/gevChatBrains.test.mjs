@@ -82,14 +82,14 @@ test('ollama extractor reads message.content, reports errors', () => {
 });
 
 test('ollama vision calls ride the vision model with cleaned images', () => {
-  assert.equal(OLLAMA_DEFAULT_VISION_MODEL, 'gemma4:31b');
-  assert.equal(resolveOllamaVisionModel('../evil'), 'gemma4:31b');
+  assert.equal(OLLAMA_DEFAULT_VISION_MODEL, 'glm-5.3-flash');
+  assert.equal(resolveOllamaVisionModel('../evil'), 'glm-5.3-flash');
   const toBase64 = (bytes) => Buffer.from(bytes).toString('base64');
   const { model, body } = buildOllamaChatRequest({
     message: 'hi',
     images: ['data:image/jpeg;base64,AAA=', 'not-base64!!!', 'data:image/png;base64,BBB='],
   });
-  assert.equal(model, 'gemma4:31b');
+  assert.equal(model, 'glm-5.3-flash');
   assert.deepEqual(body.messages[1].images, ['AAA=', 'BBB=']);
   const text = buildOllamaChatRequest({ message: 'hi' });
   assert.equal(text.model, OLLAMA_DEFAULT_MODEL);

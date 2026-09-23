@@ -119,6 +119,11 @@ test('Windows hardening applies and then verifies the exact restricted DACL', ()
   assert.equal(calls[1].args.filter((arg) => arg === '/grant:r').length, 1);
   assert.equal(calls[2].options.env.GEV_ACL_FILE, filepath);
   assert.equal(calls[2].options.env.GEV_ACL_USER_SID, USER_SID);
+  assert.equal(
+    calls[2].options.env.PSModulePath,
+    `${WINDOWS_ROOT}\\System32\\WindowsPowerShell\\v1.0\\Modules`,
+    'the ACL verifier must not inherit host/PS7 module paths',
+  );
   assert.match(calls[2].args.at(-1), /AreAccessRulesProtected/);
   assert.match(calls[2].args.at(-1), /rules\.Count -ne 3/);
   assert.match(calls[2].args.at(-1), /seen\.ContainsKey/);

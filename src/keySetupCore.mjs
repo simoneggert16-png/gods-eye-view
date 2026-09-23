@@ -14,8 +14,8 @@
 /** Longest accepted key/token value. Real provider keys are all far shorter. */
 export const KEY_SETUP_VALUE_LIMIT = 512;
 
-/** Most env vars accepted in one save. The registry defines nine. */
-export const KEY_SETUP_UPDATE_LIMIT = 16;
+/** Most env vars accepted in one save. */
+export const KEY_SETUP_UPDATE_LIMIT = 24;
 
 /** Header line written above keys the panel appends to a .env file. */
 export const KEY_SETUP_APPEND_HEADER = '# Keys added by the in-app POWER UP panel';
@@ -116,6 +116,22 @@ export const KEY_SETUP_KEYS = Object.freeze([
     unlocks: 'Higher space-missions request allowance',
     getUrl: 'https://thespacedevs.com',
     envVars: Object.freeze(['LL2_API_TOKEN']),
+    tier: 'free',
+  }),
+  Object.freeze({
+    id: 'abacus',
+    title: 'ABACUS.AI',
+    unlocks: 'Abacus AI brain & tactical vision analyst for live CCTV streams',
+    getUrl: 'https://abacus.ai/app/profile/keys',
+    envVars: Object.freeze(['ABACUS_API_KEY']),
+    tier: 'metered',
+  }),
+  Object.freeze({
+    id: 'windy',
+    title: 'WINDY WEBCAMS',
+    unlocks: 'Live Swiss and worldwide webcams streaming catalog (v3)',
+    getUrl: 'https://api.windy.com/webcams',
+    envVars: Object.freeze(['WINDY_API_KEY']),
     tier: 'free',
   }),
 ]);

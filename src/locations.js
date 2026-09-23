@@ -563,9 +563,14 @@ export async function searchAndFlyTo(viewer, query, options = {}) {
 
   const explicitOverview = options.viewMode === 'overview';
 
+  // Countries and large administrative regions must never collapse into 250m pedestrian range,
+  // even under forceClose ("zoom into Iran" / "closer look at France").
+  const isRegionOrCountry = navigationMode === 'region-overview';
+  const effectiveForceClose = options.forceClose && !isRegionOrCountry;
+
   // Frame the geocode viewport for area-like modes — and for an EXPLICIT overview ask
   // ("give me an overview of X"), which previously fell through to building range.
-  if (!requestedRange && !options.forceClose
+  if (!requestedRange && !effectiveForceClose
       && (shouldFrameGeocodeViewport(navigationMode) || explicitOverview)) {
     // Natural regions (mountain ranges, deserts, seas) geocode as area-overview with
     // enormous viewports — fitting the whole box flies the camera to space (owner field
@@ -648,7 +653,7 @@ export async function searchAndFlyTo(viewer, query, options = {}) {
     longitude: buildingBounds?.lon ?? lng,
     navigationMode: requestedRange
       ? 'explicit-range'
-      : (options.forceClose ? navigationMode.replace('-overview', '-close') : navigationMode),
+      : (effectiveForceClose ? navigationMode.replace('-overview', '-close') : navigationMode),
     rangeM: Math.round(flight.range),
   };
 }
@@ -905,6 +910,9 @@ export function regionFramingPlan(viewport) {
 
 function defaultRangeForNavigationMode(mode) {
   // Fallback ranges when the geocode has no usable viewport to frame.
+  if (mode === 'region-overview' || mode === 'region-close') return 450000;
+  if (mode === 'city-overview' || mode === 'city-close') return 35000;
+  if (mode === 'neighborhood-close') return 4500;
   if (mode === 'area-overview') return 1400;
   if (mode === 'street-corridor') return 900;
   return 250;
