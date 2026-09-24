@@ -46,7 +46,7 @@ export const ROUTER_TOOLS = Object.freeze([
   'control_scene {action: list|play|stop|next, sceneId?}',
   'control_radio {action: enable|disable|play|resume|pause|stop|next|previous|volume|select, category?, locationQuery?}',
   'control_cctv {action: select|nearest|enable|disable|next|prev|focus|coverage|viewshed|analyze, cameraQuery?} — SHOW, VIEW, OR ANALYZE CCTV / WEBCAM / CAMERAS in any city, place, landmark, or street (e.g. Diepoldsau, Zürich, London, Austin). Use action: "select" and cameraQuery: "<place or camera name>" for "zeig mir eine kamera in X", or action: "analyze" for "was sieht die kamera in X" / "analysiere kamera in X"',
-  'annotate_map {annotations: [{type: area|pin|route, target, entityKind?: country|state|city|neighborhood|building|address}], flyTo?: boolean, persist?: boolean} — DRAW, OUTLINE, OR SHOW BOUNDARIES of any country, state, region, city, address, or landmark. When the user asks to draw or outline (e.g. "zeichne X ein", "umrande X", "outline X", "mark borders of X"), ALWAYS call annotate_map with type: "area", target: "<clean place name>", and flyTo: true.',
+  'annotate_map {annotations: [{type: area|pin|route, target, latitude?: number, longitude?: number, entityKind?: country|state|city|neighborhood|building|address}], flyTo?: boolean, persist?: boolean} — DRAW, OUTLINE, OR SHOW BOUNDARIES of any country, state, region, city, address, or landmark. When coordinates (latitude, longitude) are known from your AI world knowledge, ALWAYS supply them inside each annotation item to place the mark precisely without relying on text geocoders!',
   'clear_annotations {} — ONLY on explicit clear asks',
   'analyst_query {layers, scope?, filters?, sortBy?, limit?} — COUNT/LIST questions over live data (never navigates)',
   'move_camera {motion: orbit|pan|tilt|rotate|stop, direction?, speed?} — orbit/rotate the view',
@@ -69,7 +69,11 @@ export const ROUTER_SYSTEM_PROMPT = [
   '1. MAP ACTIONS: Pick the single best tool from the menu. Prefer navigation with a real place name over relative moves when a place is meant.',
   'When the user asks to draw, outline, or show boundaries of any place, country, state, region, island, city, or address (e.g. "zeichne ... ein", "umrande ...", "outline ..."), ALWAYS use annotate_map with type: "area" and flyTo: true. Translate colloquial nicknames or German place names to standard international/English names if helpful (e.g. "Epsteins Insel" -> "Epstein Island" or "Little Saint James", "Osterinsel" -> "Easter Island").',
   '"Zoom into X / zoome in X rein" with a named building, street, or POI means fly_to_location with viewMode close, not a relative nudge. World-famous buildings resolve directly worldwide (not just one island): map German names to canonical English ones (e.g. "Eiffelturm" -> "Eiffel Tower, Paris", "Freiheitsstatue" -> "Statue of Liberty", "Kölner Dom" -> "Cologne Cathedral", "Brandenburger Tor" -> "Brandenburg Gate", "Epsteins bekanntes Gebäude / Tempel" -> "Epstein temple"). When you know exact coordinates of a famous place, prefer latitude + longitude as two separate numbers.',
-  'FAMOUS ESTATES & MANSIONS ("Diddys Villa", "Diddy\'s mansion", "Sean Combs mansion", "Playboy Mansion", "Neverland Ranch", "Mar-a-Lago"): Map "Diddys Villa" / "Diddy\'s mansion" to Sean Combs\' Holmby Hills mansion in Los Angeles at 400 S Mapleton Dr (coordinates: latitude 34.0788, longitude -118.4312). For "markiere diddys villa", call annotate_map with type: "area", target: "Diddys Villa", flyTo: true. For "zeige diddys villa" / "fliege zu diddys villa" / "zeige sie mir" (referring to the villa), call fly_to_location with query: "Diddys Villa" or latitude: 34.0788, longitude: -118.4312, rangeM: 600, pitch: -30.',
+  'AUTONOMOUS AI GEOSPATIAL INTELLIGENCE & WORLD KNOWLEDGE (NO BRITTLE KEYWORDS): You are an advanced AI possessing deep real-world geographic, architectural, and historical knowledge across all continents. Do NOT depend on brittle keyword matching or geocoder dictionaries to recognize places. For ANY location the user asks for — whether it is a celebrity mansion/villa (e.g. Sean "Diddy" Combs Holmby Hills or Star Island, Drake\'s The Embassy in Toronto, Playboy Mansion, Neverland Ranch, Bill Gates Xanadu, Elon Musk Starbase, Mar-a-Lago), a political or historical site, military facility, secret base, mountain peak, battleground, disaster area, or private estate:\n'
+  + '- Always use your internal AI world knowledge to resolve the exact real-world geographic coordinates (latitude and longitude) and real street address!\n'
+  + '- For annotate_map: ALWAYS provide latitude and longitude (as numbers) inside the annotation object alongside target, e.g. {"name": "annotate_map", "args": {"annotations": [{"type": "area", "target": "Diddys Villa", "latitude": 34.0788, "longitude": -118.4312, "entityKind": "building"}], "flyTo": true}, "say": "Ich markiere Diddys Villa in Los Angeles."}. Supplying latitude and longitude ensures instant, 100% accurate placement without geocoder failure!\n'
+  + '- For fly_to_location: ALWAYS supply latitude and longitude (as numbers), with appropriate rangeM (e.g. 500-1200 for villas/estates/compounds, 2500 for neighborhoods, 15000 for cities), pitch (e.g. -25 to -35 for 3D perspective), and heading! (e.g. {"name": "fly_to_location", "args": {"latitude": 34.0788, "longitude": -118.4312, "rangeM": 600, "pitch": -30}, "say": "Ich fliege zu Diddys Villa in Los Angeles."}).\n'
+  + '- Follow-ups and pronouns ("zeige sie mir", "bring mich hin", "fliege dorthin", "markiere es"): Resolve the exact coordinates and place from conversation history immediately and execute the tool call with latitude and longitude!',
   'COUNTRIES / STATES / REGIONS ("zeig mir Iran", "kannst du mir Iran zeigen", "take me to Japan", "fliege nach Deutschland"): ALWAYS call fly_to_location with query: "<country/region>" without viewMode: "close" (or viewMode: "overview"). Never use viewMode: "close" for whole countries or states — they must be framed in whole-country/regional overview so the user can see the country, never zoomed down to a few hundred meters in the ground.',
   'TRACKABLE ENTITIES (satellites, ships, aircraft — never geocode these!): when the utterance names a specific satellite ("ISS", "Mark Robers Satellit", "Hubble", "Webb"), ship ("Ever Given"), or aircraft identity (callsign, hex, registration), ALWAYS use track_entity with that identity — never fly_to_location. Famous mappings: "Mark Robers Satellit / Mark Rober satellite" -> query "SATGUS", "Hubble" -> "HST", "James Webb" -> "JWST". The layer enables itself.',
   'GENERIC / NEAREST AIRCRAFT: "show me a military flight", "zeige mir einen Militärflug", "any plane", "ein Flugzeug", or "nearest aircraft" is NOT a name lookup. Use select_nearest_aircraft with layerId "military" for military wording, otherwise "flights". For several objects or traffic overhead, use frame_overhead. Only use track_entity when a specific identity is named.',
@@ -163,14 +167,17 @@ export function buildPlaceFixMessage(query, historyEntries, sceneContext = '') {
   const scene = String(sceneContext || '').trim().slice(0, 800);
   const context = history ? `Conversation so far:\n${history}\n\n` : '';
   const sceneBlock = scene ? `Current scene (camera place, selection, layers):\n${scene}\n\n` : '';
-  return `${context}${sceneBlock}The place lookup for "${clean}" found nothing. Reply with ONLY JSON: {"query": "<corrected searchable place name>"} — fix typos (shenzen→Shenzhen), resolve pronouns/demonstratives ("diesen Wald", "dorthin", "it") from history first and scene second, prefer English OpenStreetMap names. If it is unmappable, reply exactly {"unknown": true}.`;
+  return `${context}${sceneBlock}Geocoding for "${clean}" returned zero results in standard maps. Use your internal AI world knowledge to resolve this place anywhere on Earth!
+Reply with ONLY JSON:
+{"latitude": <number>, "longitude": <number>, "query": "<canonical place or street address name>"}
+If you know the real-world location (for any mansion, villa, landmark, compound, historical site, or base), ALWAYS provide its exact real-world latitude and longitude numbers! If you know the real street address, provide it in "query". Fix typos (shenzen→Shenzhen) and resolve pronouns from context. If completely unmappable, reply exactly {"unknown": true}.`;
 }
 
 /**
- * Extract a corrected place name from a brain answer.
+ * Extract a corrected place name and/or coordinates from a brain answer.
  *
  * @param {unknown} answer - Raw brain text.
- * @returns {{query:string}|{unknown:true}|null} Fix, explicit unknown, or null.
+ * @returns {{query?:string,latitude?:number,longitude?:number}|{unknown:true}|null} Fix, coordinates, explicit unknown, or null.
  */
 export function extractPlaceFix(answer) {
   if (typeof answer !== 'string') return null;
@@ -186,10 +193,23 @@ export function extractPlaceFix(answer) {
   }
   if (!parsed || typeof parsed !== 'object') return null;
   if (parsed.unknown === true) return { unknown: true };
-  const query = [parsed.query, parsed.place, parsed.location]
-    .map((value) => (typeof value === 'string' ? value.trim().slice(0, 160) : ''))
-    .find((value) => value);
-  return query ? { query } : null;
+
+  // If this object is actually a tool call (e.g. {"name": "select_nearest_aircraft", ...}), reject it as a place fix!
+  const possibleTool = String(parsed.name || parsed.tool || parsed.action || '').trim().toLowerCase();
+  if (possibleTool && normalizeRouterToolName(possibleTool)) {
+    return null;
+  }
+
+  const queryCandidate = parsed.query || parsed.place || parsed.location || parsed.target || parsed.address || (!possibleTool ? parsed.name : '');
+  const query = typeof queryCandidate === 'string' ? queryCandidate.trim().slice(0, 160) : '';
+  const lat = Number(parsed.latitude ?? parsed.lat);
+  const lon = Number(parsed.longitude ?? parsed.lon ?? parsed.lng);
+  const hasCoords = Number.isFinite(lat) && Number.isFinite(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
+  if (!query && !hasCoords) return null;
+  return {
+    ...(query ? { query } : {}),
+    ...(hasCoords ? { latitude: lat, longitude: lon } : {}),
+  };
 }
 /**
  * Extract a routed tool call from brain output. Tolerates prose around the
@@ -410,11 +430,14 @@ export function extractRouterCall(answer) {
     args.action = parsed.action.trim();
   }
 
-  // Normalize query aliases
+  // Normalize query and coordinate aliases
   if (canonicalName === 'track_entity' && !args.query) {
     args.query = String(args.entity_query || args.target || args.name || '').trim();
   }
   if (canonicalName === 'fly_to_location') {
+    if (args.lat !== undefined && args.latitude === undefined) args.latitude = args.lat;
+    if (args.lon !== undefined && args.longitude === undefined) args.longitude = args.lon;
+    if (args.lng !== undefined && args.longitude === undefined) args.longitude = args.lng;
     if (!args.query || (typeof args.query === 'string' && !args.query.trim())) {
       const fallback = args.location || args.place || args.target || args.name || args.destination || args.city || '';
       if (fallback) {
@@ -422,6 +445,21 @@ export function extractRouterCall(answer) {
       }
     } else if (typeof args.query === 'string') {
       args.query = args.query.trim();
+    }
+  }
+  if (canonicalName === 'annotate_map') {
+    if (args.lat !== undefined && args.latitude === undefined) args.latitude = args.lat;
+    if (args.lon !== undefined && args.longitude === undefined) args.longitude = args.lon;
+    if (args.lng !== undefined && args.longitude === undefined) args.longitude = args.lng;
+    if (Array.isArray(args.annotations)) {
+      args.annotations = args.annotations.map((item) => {
+        if (!item || typeof item !== 'object') return item;
+        const out = { ...item };
+        if (out.lat !== undefined && out.latitude === undefined) out.latitude = out.lat;
+        if (out.lon !== undefined && out.longitude === undefined) out.longitude = out.lon;
+        if (out.lng !== undefined && out.longitude === undefined) out.longitude = out.lng;
+        return out;
+      });
     }
   }
 
@@ -572,8 +610,9 @@ export function isCompleteRouterCall(name, args = {}) {
       return Boolean(str(a.query));
     case 'annotate_map': {
       const list = Array.isArray(a.annotations) ? a.annotations : [];
-      // annotateMap itself also accepts a flat args.name as the target.
-      return list.length > 0 || Boolean(str(a.target) || str(a.query) || str(a.location) || str(a.place) || str(a.entity) || str(a.name));
+      const hasCoords = (num(a.latitude) && num(a.longitude)) || list.some((it) => it && num(it.latitude) && num(it.longitude));
+      // annotateMap itself also accepts a flat args.name as the target, or numeric coordinates.
+      return list.length > 0 || hasCoords || Boolean(str(a.target) || str(a.query) || str(a.location) || str(a.place) || str(a.entity) || str(a.name));
     }
     case 'adjust_camera_zoom':
       return Boolean(str(a.direction));

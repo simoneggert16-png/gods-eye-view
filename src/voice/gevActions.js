@@ -1318,6 +1318,12 @@ function sanitizeAnnotationSpec(spec) {
   if (typeof out.target === 'string') out.target = clampStr(out.target, MAX_TARGET_LEN);
   if (typeof out.toTarget === 'string') out.toTarget = clampStr(out.toTarget, MAX_TARGET_LEN);
   if (typeof out.label === 'string') out.label = clampStr(out.label, MAX_LABEL_LEN);
+  const lat = Number(out.latitude ?? out.lat);
+  const lon = Number(out.longitude ?? out.lon ?? out.lng);
+  if (Number.isFinite(lat) && Number.isFinite(lon)) {
+    out.latitude = lat;
+    out.longitude = lon;
+  }
   if (Array.isArray(out.points)) {
     out.points = out.points.slice(0, MAX_ROUTE_POINTS).map((p) => (
       p && typeof p === 'object' && typeof p.target === 'string'
@@ -1338,10 +1344,14 @@ async function annotateMap(annotations, args = {}) {
     return { ok: false, action: 'annotate_map', error: 'Annotation engine unavailable' };
   }
   let raw = Array.isArray(args?.annotations) ? args.annotations : [];
-  if (!raw.length && (args?.target || args?.query || args?.location || args?.place || args?.entity || args?.name)) {
+  if (!raw.length && (args?.target || args?.query || args?.location || args?.place || args?.entity || args?.name || (Number.isFinite(Number(args?.latitude ?? args?.lat)) && Number.isFinite(Number(args?.longitude ?? args?.lon ?? args?.lng))))) {
+    const lat = Number(args?.latitude ?? args?.lat);
+    const lon = Number(args?.longitude ?? args?.lon ?? args?.lng);
     raw = [{
-      target: args.target || args.query || args.location || args.place || args.entity || args.name,
+      target: args.target || args.query || args.location || args.place || args.entity || args.name || (Number.isFinite(lat) && Number.isFinite(lon) ? `${lat.toFixed(4)}, ${lon.toFixed(4)}` : 'Target'),
       type: args.type || 'area',
+      latitude: Number.isFinite(lat) ? lat : undefined,
+      longitude: Number.isFinite(lon) ? lon : undefined,
       entityKind: args.entityKind,
       label: args.label,
     }];

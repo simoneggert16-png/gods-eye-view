@@ -2156,20 +2156,30 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       if (!response || response.status === 503) continue;
       const data = await response?.json?.().catch(() => null);
       const fix = extractPlaceFix(data?.answer);
-      if (!fix || fix.unknown || !fix.query) continue;
-      if (fix.query.toLowerCase() === originalQuery.toLowerCase()) continue; // no loop on identical
+      if (!fix || fix.unknown || (!fix.query && (!Number.isFinite(fix.latitude) || !Number.isFinite(fix.longitude)))) continue;
+      const hasCoords = Number.isFinite(fix.latitude) && Number.isFinite(fix.longitude);
+      if (!hasCoords && fix.query && fix.query.toLowerCase() === originalQuery.toLowerCase()) continue; // no loop on identical
       let outcome;
+      const targetName = fix.query || originalQuery;
+      const flyArgs = { ...args };
+      if (hasCoords) {
+        flyArgs.latitude = fix.latitude;
+        flyArgs.longitude = fix.longitude;
+        if (fix.query) flyArgs.query = fix.query;
+      } else {
+        flyArgs.query = fix.query;
+      }
       try {
-        const result = await runner('fly_to_location', { ...args, query: fix.query });
+        const result = await runner('fly_to_location', flyArgs);
         outcome = { name: 'fly_to_location', ok: result?.ok !== false, result };
       } catch (error) {
         outcome = { name: 'fly_to_location', ok: false, error: error?.message || String(error) };
       }
       const speech = outcome.ok
-        ? (de ? `Fliege nach ${fix.query}.` : `Flying to ${fix.query}.`)
+        ? (de ? `Fliege nach ${targetName}.` : `Flying to ${targetName}.`)
         : (de
-          ? `Auch „${fix.query}“ habe ich nicht gefunden.`
-          : `I could not find "${fix.query}" either.`);
+          ? `Auch „${targetName}“ habe ich nicht gefunden.`
+          : `I could not find "${targetName}" either.`);
       state.lastResult = { ok: outcome.ok, speech, outcomes: [outcome], retriedFrom: originalQuery };
       setDetail(speech);
       if (!opts?.silent) speak(speech, lang);
@@ -2209,11 +2219,21 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       if (!response || response.status === 503) continue;
       const data = await response?.json?.().catch(() => null);
       const fix = extractPlaceFix(data?.answer);
-      if (!fix || fix.unknown || !fix.query) continue;
-      if (fix.query.toLowerCase() === originalTarget.toLowerCase()) continue; // no loop on identical
+      if (!fix || fix.unknown || (!fix.query && (!Number.isFinite(fix.latitude) || !Number.isFinite(fix.longitude)))) continue;
+      const hasCoords = Number.isFinite(fix.latitude) && Number.isFinite(fix.longitude);
+      if (!hasCoords && fix.query && fix.query.toLowerCase() === originalTarget.toLowerCase()) continue; // no loop on identical
+      const targetQuery = fix.query || originalTarget;
       const fixedAnnotations = list.length
-        ? [{ ...list[0], target: fix.query }]
-        : [{ type: 'area', target: fix.query }];
+        ? [{
+            ...list[0],
+            target: targetQuery,
+            ...(hasCoords ? { latitude: fix.latitude, longitude: fix.longitude } : {}),
+          }]
+        : [{
+            type: 'area',
+            target: targetQuery,
+            ...(hasCoords ? { latitude: fix.latitude, longitude: fix.longitude } : {}),
+          }];
       let outcome;
       try {
         const result = await runner('annotate_map', { ...args, annotations: fixedAnnotations });
@@ -2222,10 +2242,10 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
         outcome = { name: 'annotate_map', ok: false, error: error?.message || String(error) };
       }
       const speech = outcome.ok
-        ? (de ? `Zeichne ${fix.query} ein.` : `Marking ${fix.query}.`)
+        ? (de ? `Zeichne ${targetQuery} ein.` : `Marking ${targetQuery}.`)
         : (de
-          ? `Auch „${fix.query}“ konnte ich nicht einzeichnen.`
-          : `I could not mark "${fix.query}" either.`);
+          ? `Auch „${targetQuery}“ konnte ich nicht einzeichnen.`
+          : `I could not mark "${targetQuery}" either.`);
       state.lastResult = { ok: outcome.ok, speech, outcomes: [outcome], retriedFrom: originalTarget };
       setDetail(speech);
       if (!opts?.silent) speak(speech, lang);

@@ -520,5 +520,37 @@ test('extractFirstJsonValue extracts both objects and arrays with string and nes
   assert.equal(extractFirstJsonValue('[1, 2, {"unclosed": true]'), null);
 });
 
+test('extractPlaceFix extracts coordinates and place name from AI world knowledge', () => {
+  const coordFix = extractPlaceFix('```json\n{"latitude": 34.0788, "longitude": -118.4312, "query": "Sean Combs Mansion"}\n```');
+  assert.deepEqual(coordFix, {
+    latitude: 34.0788,
+    longitude: -118.4312,
+    query: 'Sean Combs Mansion',
+  });
+
+  const flatFix = extractPlaceFix('{"lat": 25.7781, "lon": -80.1502, "place": "Star Island"}');
+  assert.deepEqual(flatFix, {
+    latitude: 25.7781,
+    longitude: -80.1502,
+    query: 'Star Island',
+  });
+
+  // Tool calls must NOT be extracted as place fixes
+  assert.equal(extractPlaceFix('{"name": "select_nearest_aircraft", "args": {"layerId": "military"}}'), null);
+  assert.equal(extractPlaceFix('{"action": "control_cctv", "cameraQuery": "London"}'), null);
+});
+
+test('extractRouterCall normalizes coordinates for annotate_map and fly_to_location', () => {
+  const routed = extractRouterCall('{"name": "annotate_map", "args": {"annotations": [{"type": "area", "target": "Diddys Villa", "lat": 34.0788, "lon": -118.4312}], "flyTo": true}}');
+  assert.equal(routed.name, 'annotate_map');
+  assert.equal(routed.args.annotations[0].latitude, 34.0788);
+  assert.equal(routed.args.annotations[0].longitude, -118.4312);
+
+  const flyCall = extractRouterCall('{"name": "fly_to_location", "args": {"lat": 34.0788, "lon": -118.4312, "rangeM": 600}}');
+  assert.equal(flyCall.name, 'fly_to_location');
+  assert.equal(flyCall.args.latitude, 34.0788);
+  assert.equal(flyCall.args.longitude, -118.4312);
+});
+
 
 
