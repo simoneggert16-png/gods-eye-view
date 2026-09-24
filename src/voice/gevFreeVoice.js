@@ -748,6 +748,28 @@ export function parseFreeVoiceCommand(input) {
     }
   }
 
+  // --- Something cool / Exciting live action -------------------------------
+  if (/\b(was\s+cooles|etwas\s+cooles|zeig\s+mir\s+was\s+cooles|etwas\s+spannendes|something\s+cool|show\s+me\s+something\s+cool|show\s+something\s+cool)\b/i.test(text)) {
+    return {
+      calls: [{ name: 'select_nearest_aircraft', args: { layerId: 'military' } }],
+      speech: say('Tracking an active military flight in 3D for you.', 'Ich schalte auf einen aktiven Militärflug und verfolge ihn im 3D-Modus.'),
+      lang,
+    };
+  }
+
+  // --- Flight traffic command ---------------------------------------------
+  if (/\b(flugverkehr|air\s*traffic|flight\s*traffic)\b/i.test(text)) {
+    const locMatch = text.match(/(?:über|in|near|over)\s+([a-zA-ZäöüÄÖÜß\s-]+)/i);
+    const loc = locMatch ? locMatch[1].trim() : '';
+    return {
+      calls: [{ name: 'select_nearest_aircraft', args: { layerId: 'flights', ...(loc ? { locationQuery: loc } : {}) } }],
+      speech: loc
+        ? say(`Tracking flight traffic over ${loc}.`, `Verfolge den Flugverkehr über ${loc}.`)
+        : say('Activating flights and tracking nearest aircraft.', 'Aktiviere Flugverkehr und verfolge das nächste Flugzeug.'),
+      lang,
+    };
+  }
+
   // --- Frame overhead ----------------------------------------------------
   if (/(planes?|aircraft|flugzeuge?) overhead|planes? above|show me the planes|flugzeuge über mir/.test(text)) {
     return {

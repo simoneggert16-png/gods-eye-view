@@ -2613,7 +2613,21 @@ async function frameOverhead(viewer, dataManager, styleManager, args = {}) {
     return { ok: false, action: 'frame_overhead', error: `Unknown target layer: ${args.target}` };
   }
   if (!dataManager.isEnabled(layerId)) {
-    return { ok: false, action: 'frame_overhead', layerId, error: `The ${layerId} layer is not enabled` };
+    if (typeof dataManager.enable === 'function') {
+      try {
+        await dataManager.enable(layerId);
+        if (layerId === 'flights') {
+          try { await dataManager.enable('military'); } catch {}
+        }
+        if (typeof dataManager.refreshLayer === 'function') {
+          await dataManager.refreshLayer(layerId);
+        }
+      } catch (e) {
+        console.warn(`[frameOverhead] Auto-enable layer ${layerId} error:`, e);
+      }
+    } else {
+      return { ok: false, action: 'frame_overhead', layerId, error: `The ${layerId} layer is not enabled` };
+    }
   }
   const module = dataManager.layers.get(layerId)?.module;
   const isSatellites = layerId === 'satellites';
@@ -2622,9 +2636,9 @@ async function frameOverhead(viewer, dataManager, styleManager, args = {}) {
   const center = getViewTargetCartesian(viewer) || viewer.camera.positionWC;
 
   let entries = [];
-  if (typeof module.getNearby === 'function') {
+  if (typeof module?.getNearby === 'function') {
     entries = module.getNearby(center, radiusKm * 1000, 80) || [];
-  } else if (typeof module.getAllPositions === 'function') {
+  } else if (typeof module?.getAllPositions === 'function') {
     entries = (module.getAllPositions(800) || [])
       .filter((entry) => entry.position)
       .map((entry) => ({ ...entry, distance: Cesium.Cartesian3.distance(center, entry.position) }))
@@ -2632,11 +2646,58 @@ async function frameOverhead(viewer, dataManager, styleManager, args = {}) {
       .sort((a, b) => a.distance - b.distance)
       .slice(0, 80);
   }
+
+  // If none nearby, try a wider search radius
   if (!entries.length) {
-    return {
-      ok: false, action: 'frame_overhead', layerId, radiusKm: Math.round(radiusKm), count: 0,
-      error: `No ${targetRaw} within ${Math.round(radiusKm)} km of the current view`,
-    };
+    const wideRadiusKm = Math.min(radiusKm * 6, 2500);
+    if (typeof module?.getNearby === 'function') {
+      entries = module.getNearby(center, wideRadiusKm * 1000, 80) || [];
+    } else if (typeof module?.getAllPositions === 'function') {
+      entries = (module.getAllPositions(800) || [])
+        .filter((entry) => entry.position)
+        .map((entry) => ({ ...entry, distance: Cesium.Cartesian3.distance(center, entry.position) }))
+        .filter((entry) => entry.distance <= wideRadiusKm * 1000)
+        .sort((a, b) => a.distance - b.distance)
+        .slice(0, 80);
+    }
+  }
+
+  // If still none, check military flights when target is flights
+  if (!entries.length && layerId === 'flights') {
+    const milModule = dataManager.layers.get('military')?.module;
+    if (typeof milModule?.getNearby === 'function') {
+      entries = milModule.getNearby(center, radiusKm * 4000, 80) || [];
+    }
+  }
+
+  if (!entries.length) {
+    // Graceful camera framing: elevate camera to tactical overview without failing
+    const currentPos = viewer.camera.positionCartographic;
+    return runManagedVoiceNavigation(styleManager, 'frame', 'frame_overhead', () => {
+      if (currentPos) {
+        viewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromRadians(
+            currentPos.longitude,
+            currentPos.latitude,
+            Math.max(currentPos.height, 15000),
+          ),
+          orientation: {
+            heading: viewer.camera.heading,
+            pitch: Cesium.Math.toRadians(-35),
+            roll: 0,
+          },
+          duration: 1.5,
+        });
+      }
+      return {
+        ok: true,
+        action: 'frame_overhead',
+        layerId,
+        radiusKm: Math.round(radiusKm),
+        count: 0,
+        message: 'Layer aktiviert und Sicht ausgerichtet.',
+      };
+    });
   }
 
   const sphere = Cesium.BoundingSphere.fromPoints(entries.map((entry) => entry.position));
