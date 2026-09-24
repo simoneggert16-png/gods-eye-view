@@ -1,4 +1,4 @@
-﻿/**
+/**
  * PIN Gatekeeper for God's Eye View.
  *
  * When GEV_ACCESS_PIN is configured on the server, visitors must provide the
@@ -288,7 +288,7 @@ export function showPinModal(onSuccess) {
  */
 export async function gatekeeper(bootFn) {
   const status = await checkPinRequirement();
-  if (!status.required || status.authenticated || sessionStorage.getItem(PIN_SESSION_KEY) === 'true') {
+  if (!status.required || status.authenticated) {
     return bootFn();
   }
   showPinModal(() => {

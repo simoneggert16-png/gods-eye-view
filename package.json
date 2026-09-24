@@ -33,6 +33,7 @@
   ],
   "main": "electron/main.cjs",
   "scripts": {
+    "start": "node scripts/start-production.mjs",
     "app": "electron .",
     "doctor": "node scripts/setup-doctor.mjs",
     "dev": "vite",

@@ -1,6 +1,11 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
-import { pinGateProxy } from './pinGateServer.js';
+import {
+  pinGateProxy,
+  createSignedSessionToken,
+  verifySessionToken,
+  comparePinSafely,
+} from './pinGateServer.js';
 
 test('pinGateProxy is a no-op when GEV_ACCESS_PIN is unset', async () => {
   delete process.env.GEV_ACCESS_PIN;
@@ -61,4 +66,27 @@ test('pinGateProxy protects endpoints and checks verification when PIN is set', 
   assert.equal(passNext, true);
 
   delete process.env.GEV_ACCESS_PIN;
+});
+
+test('pinGateServer cryptographic session tokens prevent forgery and console tampering', async () => {
+  // 1. Valid token validates
+  const token = createSignedSessionToken();
+  assert.equal(verifySessionToken(token), true);
+
+  // 2. Tampered signature is rejected
+  const [ts, sig] = token.split('.');
+  const tamperedSig = sig.slice(0, -2) + (sig.endsWith('a') ? 'b' : 'a');
+  assert.equal(verifySessionToken(`${ts}.${tamperedSig}`), false);
+
+  // 3. Forged tokens are rejected
+  assert.equal(verifySessionToken('9999999999999.deadbeef12345678'), false);
+  assert.equal(verifySessionToken(''), false);
+  assert.equal(verifySessionToken(null), false);
+  assert.equal(verifySessionToken('gev_auth=true'), false);
+
+  // 4. Constant time PIN comparison
+  assert.equal(comparePinSafely('991909', '991909'), true);
+  assert.equal(comparePinSafely('991908', '991909'), false);
+  assert.equal(comparePinSafely('9919', '991909'), false);
+  assert.equal(comparePinSafely('', '991909'), false);
 });
