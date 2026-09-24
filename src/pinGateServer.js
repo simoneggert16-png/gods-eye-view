@@ -18,8 +18,10 @@
 
 import crypto from 'node:crypto';
 
-// Server-private secret for signing session tokens
-const SERVER_SECRET = process.env.GEV_SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+// Server-private secret for signing session tokens (stable across restarts when PIN is configured)
+const STABLE_SALT = 'gev_session_salt_2026_991909_secure';
+const SERVER_SECRET = process.env.GEV_SESSION_SECRET ||
+  crypto.createHash('sha256').update(String(process.env.GEV_ACCESS_PIN || '991909').trim() + STABLE_SALT).digest('hex');
 
 /**
  * Generate a cryptographically signed HMAC-SHA256 session token.
@@ -138,7 +140,26 @@ export function pinGateProxy() {
       res.end(JSON.stringify({ required: !!pin, authenticated: isAuth }));
     });
 
-    // 2. Verification endpoint
+    // 2. Client runtime configuration (Cesium Ion & Google Maps)
+    middlewares.use('/api/config/client', (req, res) => {
+      if (pin && !isAuthorized(req)) {
+        res.writeHead(401, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+        });
+        return res.end(JSON.stringify({ error: 'Unauthorized', pinRequired: true }));
+      }
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+      });
+      res.end(JSON.stringify({
+        cesiumToken: process.env.CESIUM_ION_TOKEN || '',
+        googleApiKey: process.env.GOOGLE_MAPS_API_KEY || '',
+      }));
+    });
+
+    // 3. Verification endpoint
     middlewares.use('/api/pin/verify', async (req, res) => {
       const send = (status, payload, headers = {}) => {
         res.writeHead(status, {

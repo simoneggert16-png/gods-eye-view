@@ -1547,6 +1547,7 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       response = await doFetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
         body: JSON.stringify(payload),
       });
     } catch {
@@ -1562,6 +1563,16 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
       logTurn('app', speech);
       return { handled: true, result: state.lastResult };
     };
+    if (response.status === 401) {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('gev:auth-required'));
+      }
+      return fail(
+        'Security PIN required. Please enter 6-digit access code.',
+        'Sicherheits-PIN erforderlich. Bitte 6-stelligen Code eingeben.',
+        { authRequired: true },
+      );
+    }
     if (response.status === 429 || data?.retryable) {
       return fail(
         'The chat brain quota is exhausted — try again in a minute.',
@@ -1798,10 +1809,23 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
           response = await doFetch(brain.endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
             body: JSON.stringify(payload),
           });
         } catch {
           response = null;
+        }
+        if (response && response.status === 401) {
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('gev:auth-required'));
+          }
+          const authMsg = lang === 'de'
+            ? 'Sicherheits-PIN erforderlich. Bitte 6-stelligen Code eingeben.'
+            : 'Security PIN required. Please enter 6-digit access code.';
+          state.lastResult = { ok: false, speech: authMsg, answer: authMsg, authRequired: true };
+          setDetail(authMsg);
+          logTurn('app', authMsg);
+          return state.lastResult;
         }
         if (response && response.ok) {
           const data = await response?.json?.().catch(() => null);

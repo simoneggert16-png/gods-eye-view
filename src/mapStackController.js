@@ -195,7 +195,9 @@ export class MapStackController {
   isStackAvailable(id) {
     const stack = this.getStack(id);
     if (!stack) return false;
-    if (stack.kind === 'photoreal') return !!this.googleTileset;
+    if (stack.kind === 'photoreal') {
+      return !!this.googleTileset || this._hasPhotorealCredentials();
+    }
     if (stack.requiresIon) return !!this.cesiumToken;
     return true;
   }
@@ -269,19 +271,26 @@ export class MapStackController {
   async _activatePhotoreal(gen) {
     this._removeImageryLayer();
     this._syncEsriAttribution(null); // Esri is no longer on screen.
+    if (!this.googleTileset && this._hasPhotorealCredentials()) {
+      try {
+        const { loadPhotorealisticTileset } = await import('./mapStartup.js');
+        const googleApiKey = typeof window !== 'undefined' ? window.__GOOGLE_MAPS_API_KEY__ : '';
+        const photoreal = await loadPhotorealisticTileset(Cesium, {
+          googleApiKey,
+          cesiumToken: this.cesiumToken,
+        });
+        if (photoreal.tileset) {
+          this.googleTileset = photoreal.tileset;
+          this.googleTileset.maximumScreenSpaceError = 24;
+          this.googleTileset.maximumMemoryUsage = 2048;
+          this.viewer.scene.primitives.add(this.googleTileset);
+        }
+      } catch (err) {
+        console.warn('Failed to dynamically load photoreal tileset:', err);
+      }
+    }
     if (this.googleTileset) this.googleTileset.show = true;
     this.viewer.scene.globe.show = false;
-    // Terrain is left UNTOUCHED here. The photoreal globe is hidden
-    // (`globe.show = false`), so the terrain provider is inert — it renders and
-    // streams nothing. Routing this through `_setWorldTerrainEnabled(false)`
-    // would make the DEFAULT startup stack await a keyless Re:Earth `layer.json`
-    // fetch it can't use, delaying photoreal boot on a slow/blocked network and
-    // (on failure) caching the flat `EllipsoidTerrainProvider` fallback for
-    // later OSM switches. The Re:Earth fetch is therefore lazy: it happens on
-    // the first switch to an actual globe stack (`_activateGlobeStack`).
-    // `_terrainMode` is intentionally not changed — every globe-stack transition
-    // re-derives the correct provider from it (null/'world'/'keyless'), so
-    // leaving it as-is keeps the next switch correct without a photoreal fetch.
     void gen;
   }
 

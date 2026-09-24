@@ -65,6 +65,16 @@ test('pinGateProxy protects endpoints and checks verification when PIN is set', 
   );
   assert.equal(passNext, true);
 
+  // 4. Config endpoint returns credentials when authorized
+  process.env.CESIUM_ION_TOKEN = 'test-token';
+  let configData = '';
+  routes.get('/api/config/client')(
+    { headers: { cookie: 'gev_auth=1' } },
+    { writeHead: () => {}, end: (d) => configData = d },
+  );
+  assert.deepEqual(JSON.parse(configData), { cesiumToken: 'test-token', googleApiKey: '' });
+  delete process.env.CESIUM_ION_TOKEN;
+
   delete process.env.GEV_ACCESS_PIN;
 });
 

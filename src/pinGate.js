@@ -10,7 +10,7 @@ const PIN_SESSION_KEY = 'gev_pin_unlocked';
 
 export async function checkPinRequirement() {
   try {
-    const res = await fetch('/api/pin/status');
+    const res = await fetch('/api/pin/status', { credentials: 'same-origin' });
     if (!res.ok) return { required: false, authenticated: true };
     return await res.json();
   } catch {
@@ -22,6 +22,7 @@ export async function verifyPin(pin) {
   const res = await fetch('/api/pin/verify', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
     body: JSON.stringify({ pin }),
   });
   const data = await res.json().catch(() => ({ ok: false, error: 'Server error' }));
@@ -295,3 +296,21 @@ export async function gatekeeper(bootFn) {
     bootFn();
   });
 }
+
+/**
+ * Trigger re-authentication modal when any protected endpoint returns 401.
+ */
+export function triggerAuthRequired() {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('gev:auth-required'));
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('gev:auth-required', () => {
+    sessionStorage.removeItem(PIN_SESSION_KEY);
+    showPinModal();
+  });
+}
+
+
