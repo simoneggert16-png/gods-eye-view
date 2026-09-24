@@ -11,7 +11,7 @@
 import { CHAT_SYSTEM_PROMPT_MAX_CHARS, cleanVisionImages } from './gevOllama.js';
 
 /** Default model (override with ABACUS_MODEL). */
-export const ABACUS_DEFAULT_MODEL = 'gemini-2.5-flash';
+export const ABACUS_DEFAULT_MODEL = 'deepseek-ai/DeepSeek-V4.1-Flash';
 
 /** Longest user message sent. */
 export const ABACUS_MAX_MESSAGE_CHARS = 1000;
@@ -39,6 +39,8 @@ export function isValidAbacusModel(id) {
 /** Resolve the configured model id, falling back to the default. */
 export function resolveAbacusModel(configured) {
   const id = String(configured || '').trim();
+  if (!id) return ABACUS_DEFAULT_MODEL;
+  if (/^deepseek(-v4(\.1)?(-flash)?)?$/i.test(id)) return 'deepseek-ai/DeepSeek-V4.1-Flash';
   return isValidAbacusModel(id) ? id : ABACUS_DEFAULT_MODEL;
 }
 
@@ -92,8 +94,14 @@ export function buildAbacusChatRequest({ message, contextText = '', model, syste
  * @returns {{ text: string|null, blocked: boolean, reason?: string }}
  */
 export function extractAbacusChatAnswer(data) {
-  const content = data?.choices?.[0]?.message?.content;
-  if (typeof content === 'string' && content.trim()) return { text: content.trim(), blocked: false };
+  const message = data?.choices?.[0]?.message;
+  let content = message?.content;
+  if (!content && message?.reasoning_content) content = message.reasoning_content;
+  if (typeof content === 'string') {
+    const cleaned = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    if (cleaned) return { text: cleaned, blocked: false };
+    if (content.trim()) return { text: content.trim(), blocked: false };
+  }
   const reason = data?.error?.message || data?.error?.code || 'empty-response';
   return { text: null, blocked: true, reason: String(reason).slice(0, 80) };
 }

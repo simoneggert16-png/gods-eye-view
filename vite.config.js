@@ -6264,7 +6264,7 @@ export function chatBrainsProxy() {
 
       const apiKey = String(process.env.OLLAMA_API_KEY || '').trim();
       const abacusKey = String(process.env.ABACUS_API_KEY || '').trim();
-      const fallbackModel = String(process.env.ABACUS_MODEL || 'gemini-2.5-flash').trim();
+      const fallbackModel = String(process.env.ABACUS_MODEL || 'deepseek-ai/DeepSeek-V4.1-Flash').trim();
 
       const tryAbacusFallback = async () => {
         if (!abacusKey) return false;

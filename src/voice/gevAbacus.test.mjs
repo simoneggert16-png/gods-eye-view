@@ -12,10 +12,13 @@ test('validates and resolves Abacus model names safely', () => {
   assert.equal(isValidAbacusModel('gpt-4o-mini'), true);
   assert.equal(isValidAbacusModel('claude-3-5-sonnet'), true);
   assert.equal(isValidAbacusModel('meta/llama-3.3-70b'), true);
+  assert.equal(isValidAbacusModel('deepseek-ai/DeepSeek-V4.1-Flash'), true);
   assert.equal(isValidAbacusModel('../bad/path'), false);
   assert.equal(isValidAbacusModel(''), false);
 
   assert.equal(resolveAbacusModel('gpt-4o'), 'gpt-4o');
+  assert.equal(resolveAbacusModel('deepseek'), 'deepseek-ai/DeepSeek-V4.1-Flash');
+  assert.equal(resolveAbacusModel('deepseek-v4.1-flash'), 'deepseek-ai/DeepSeek-V4.1-Flash');
   assert.equal(resolveAbacusModel('   '), ABACUS_DEFAULT_MODEL);
   assert.equal(resolveAbacusModel(null), ABACUS_DEFAULT_MODEL);
 });
@@ -38,14 +41,22 @@ test('builds OpenAI-compatible chat request with scene context and vision images
   assert.equal(req.body.messages[1].content[1].type, 'image_url');
 });
 
-test('extracts text from standard OpenAI-compatible response', () => {
+test('extracts text from standard OpenAI-compatible response and strips <think> tags', () => {
   const result = extractAbacusChatAnswer({
     choices: [
-      { message: { content: 'Sicht auf den Zürichsee ist klar.' } },
+      { message: { content: '<think>User wants to know the view.</think>Sicht auf den Zürichsee ist klar.' } },
     ],
   });
   assert.equal(result.blocked, false);
   assert.equal(result.text, 'Sicht auf den Zürichsee ist klar.');
+
+  const reasoningResult = extractAbacusChatAnswer({
+    choices: [
+      { message: { reasoning_content: 'Nur Gedankengang.' } },
+    ],
+  });
+  assert.equal(reasoningResult.blocked, false);
+  assert.equal(reasoningResult.text, 'Nur Gedankengang.');
 
   const empty = extractAbacusChatAnswer({});
   assert.equal(empty.blocked, true);
