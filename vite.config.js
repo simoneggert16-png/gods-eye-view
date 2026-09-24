@@ -6243,11 +6243,6 @@ export function chatBrainsProxy() {
         json(405, { error: 'Method not allowed', answer: null });
         return;
       }
-      const apiKey = String(process.env.OLLAMA_API_KEY || '').trim();
-      if (!apiKey) {
-        json(503, { error: 'OLLAMA_API_KEY is not set', code: 'OLLAMA_NOT_CONFIGURED', answer: null });
-        return;
-      }
       let message = '';
       let contextText = '';
       let system = '';
@@ -6266,6 +6261,61 @@ export function chatBrainsProxy() {
         json(400, { error: 'Missing message', answer: null });
         return;
       }
+
+      const apiKey = String(process.env.OLLAMA_API_KEY || '').trim();
+      const abacusKey = String(process.env.ABACUS_API_KEY || '').trim();
+      const fallbackModel = String(process.env.ABACUS_MODEL || 'gemini-2.5-flash').trim();
+
+      const tryAbacusFallback = async () => {
+        if (!abacusKey) return false;
+        try {
+          const abacusReq = buildAbacusChatRequest({
+            message,
+            contextText,
+            model: fallbackModel,
+            system,
+            images,
+          });
+          let abacusRes = await postChatUpstream(
+            'https://routellm.abacus.ai/v1/chat/completions',
+            abacusKey,
+            abacusReq.body,
+            ABACUS_MAX_RESPONSE_BYTES,
+            12000,
+          );
+          if (!abacusRes.ok && images && images.length) {
+            const textReq = buildAbacusChatRequest({
+              message,
+              contextText,
+              model: fallbackModel,
+              system,
+              images: null,
+            });
+            abacusRes = await postChatUpstream(
+              'https://routellm.abacus.ai/v1/chat/completions',
+              abacusKey,
+              textReq.body,
+              ABACUS_MAX_RESPONSE_BYTES,
+              12000,
+            );
+          }
+          if (abacusRes.ok) {
+            const { text } = extractAbacusChatAnswer(abacusRes.data);
+            if (text) {
+              json(200, { answer: text.slice(0, 1600), blocked: false, error: null, fallbackModel });
+              return true;
+            }
+          }
+        } catch {}
+        return false;
+      };
+
+      if (!apiKey) {
+        if (await tryAbacusFallback()) return;
+        json(503, { error: 'OLLAMA_API_KEY is not set', code: 'OLLAMA_NOT_CONFIGURED', answer: null });
+        return;
+      }
+
       const { model, body } = buildOllamaChatRequest({ message, contextText, model: process.env.OLLAMA_MODEL, visionModel: process.env.OLLAMA_VISION_MODEL, system, images });
       let result;
       try {
@@ -6286,50 +6336,7 @@ export function chatBrainsProxy() {
         return;
       }
       if (result.status === 402 || (!result.ok && result.status !== 429)) {
-        // Transparent fallback to Gemini/Abacus if Ollama Cloud lacks subscription/credits
-        const abacusKey = String(process.env.ABACUS_API_KEY || '').trim();
-        const fallbackModel = String(process.env.ABACUS_MODEL || 'gemini-2.5-flash').trim();
-        if (abacusKey) {
-          try {
-            const abacusReq = buildAbacusChatRequest({
-              message,
-              contextText,
-              model: fallbackModel,
-              system,
-              images,
-            });
-            let abacusRes = await postChatUpstream(
-              'https://routellm.abacus.ai/v1/chat/completions',
-              abacusKey,
-              abacusReq.body,
-              ABACUS_MAX_RESPONSE_BYTES,
-              12000,
-            );
-            if (!abacusRes.ok && images && images.length) {
-              const textReq = buildAbacusChatRequest({
-                message,
-                contextText,
-                model: fallbackModel,
-                system,
-                images: null,
-              });
-              abacusRes = await postChatUpstream(
-                'https://routellm.abacus.ai/v1/chat/completions',
-                abacusKey,
-                textReq.body,
-                ABACUS_MAX_RESPONSE_BYTES,
-                12000,
-              );
-            }
-            if (abacusRes.ok) {
-              const { text } = extractAbacusChatAnswer(abacusRes.data);
-              if (text) {
-                json(200, { answer: text.slice(0, 1600), blocked: false, error: null, fallbackModel });
-                return;
-              }
-            }
-          } catch {}
-        }
+        if (await tryAbacusFallback()) return;
         if (result.status === 402) {
           const detail = String(result.data?.error || '').slice(0, 200);
           json(402, { error: detail || 'Ollama model requires subscription or credits', answer: null });
