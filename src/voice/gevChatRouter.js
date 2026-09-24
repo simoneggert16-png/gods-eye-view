@@ -25,7 +25,7 @@ export const ROUTER_MAX_HISTORY_CHARS = 150;
  * short form. Unknown names are rejected by the runner anyway.
  */
 export const ROUTER_TOOLS = Object.freeze([
-  'fly_to_location {query | locationId | latitude + longitude as SEPARATE numbers, viewMode?: close|overview} — fly/zoom to a PLACE (resolves pronouns like "diesen Wald"/"dorthin"/"it" from history + scene!). When you know exact coordinates of a famous place, pass latitude and longitude as two separate numbers, never packed into query',
+  'fly_to_location {query | locationId | latitude + longitude as SEPARATE numbers, rangeM?: number, pitch?: number, heading?: number, layerToEnable?: string, viewMode?: close|overview} — fly/zoom to a PLACE or coordinates with custom 3D camera angle (pitch: -90 to 0, heading: 0-360, rangeM: altitude) and optional layer to activate (e.g. flights, military, satellites, cctv, live-osint). Resolves pronouns ("dorthin", "it") from context.',
   'adjust_camera_zoom {direction: in|out, amount: little|medium|lot} — relative zoom, no place',
   'zoom_to_globe {} — full Earth view',
   'set_layer_visibility {layerId, enabled} — layers: flights, military, satellites, earthquakes, traffic, cctv, radio, bikeshare, ais-live-vessels, local-firms, local-datacenters, local-dams, telegeography-submarine-cables, rocket-launches, conflicts, frontlines, missile-strikes, battles, bombardments, missile-tests, military-convoys, campaign-trails, secret-service, drone-attacks, terror-attacks, live-osint',
@@ -72,7 +72,11 @@ export const ROUTER_SYSTEM_PROMPT = [
   'COUNTRIES / STATES / REGIONS ("zeig mir Iran", "kannst du mir Iran zeigen", "take me to Japan", "fliege nach Deutschland"): ALWAYS call fly_to_location with query: "<country/region>" without viewMode: "close" (or viewMode: "overview"). Never use viewMode: "close" for whole countries or states — they must be framed in whole-country/regional overview so the user can see the country, never zoomed down to a few hundred meters in the ground.',
   'TRACKABLE ENTITIES (satellites, ships, aircraft — never geocode these!): when the utterance names a specific satellite ("ISS", "Mark Robers Satellit", "Hubble", "Webb"), ship ("Ever Given"), or aircraft identity (callsign, hex, registration), ALWAYS use track_entity with that identity — never fly_to_location. Famous mappings: "Mark Robers Satellit / Mark Rober satellite" -> query "SATGUS", "Hubble" -> "HST", "James Webb" -> "JWST". The layer enables itself.',
   'GENERIC / NEAREST AIRCRAFT: "show me a military flight", "zeige mir einen Militärflug", "any plane", "ein Flugzeug", or "nearest aircraft" is NOT a name lookup. Use select_nearest_aircraft with layerId "military" for military wording, otherwise "flights". For several objects or traffic overhead, use frame_overhead. Only use track_entity when a specific identity is named.',
-  'SOMETHING COOL / WAS COOLES ("zeig mir was cooles", "zeige mir etwas spannendes", "show me something cool", "was cooles", "cool"): Track a spectacular live moving 3D entity! BEST ACTION: call select_nearest_aircraft with layerId "military" to lock onto an active military jet in 3D (e.g. {"name": "select_nearest_aircraft", "args": {"layerId": "military"}, "say": "Ich schalte auf einen aktiven Militärflug und verfolge ihn im 3D-Modus."}) or track the ISS with track_entity query "ISS" ({"name": "track_entity", "args": {"query": "ISS"}, "say": "Ich verfolge die Raumstation ISS im 3D-Orbit."}). NEVER call frame_overhead for "was cooles" — always track a real moving entity in 3D!',
+  'SOMETHING COOL / WAS COOLES / SPANNENDES ("zeig mir was cooles", "zeige mir etwas spannendes", "show me something cool", "bring mich irgendwohin", "was cooles", "cool"): You are the autonomous director of God\'s Eye View. Ingest the rich multi-system context (camera location, ground gaze target, active layers, botnet/OSINT breaking dispatches, geopolitical markets, and world wonders). Make an intelligent, creative executive choice:\n'
+  + '1. Option 3D Live Jet / Orbit: Lock onto an active military jet in 3D ({"name": "select_nearest_aircraft", "args": {"layerId": "military"}, "say": "Ich schalte auf einen aktiven Militärjet im 3D-Modus und richte die Verfolgungskamera mit Kondensstreifen aus."}) or orbit the ISS ({"name": "track_entity", "args": {"query": "ISS"}, "say": "Ich docke an die Raumstation ISS im 3D-Orbit an."}).\n'
+  + '2. Option World Wonder / Landmark: Fly to a breathtaking natural wonder or landmark with cinematic camera angles (pitch: e.g. -25 to -35, heading, rangeM) and auto-enable layers if relevant! Examples: Mount Everest ({"name": "fly_to_location", "args": {"latitude": 27.9881, "longitude": 86.9250, "rangeM": 7000, "pitch": -25, "heading": 180}, "say": "Ich bringe dich zum Mount Everest auf 8.848m Höhe mit atemberaubendem Gebirgshorizont."}), Grand Canyon ({"name": "fly_to_location", "args": {"latitude": 36.0544, "longitude": -112.1401, "rangeM": 4500, "pitch": -35, "heading": 60}, "say": "Ich fliege dich in den Grand Canyon mit dramatischer 3D-Schluchtperspektive."}), Pyramids of Giza ({"name": "fly_to_location", "args": {"latitude": 29.9792, "longitude": 31.1342, "rangeM": 2200, "pitch": -30, "heading": 45}, "say": "Ich zeige dir die Pyramiden von Gizeh aus der Vogelperspektive."}), Matterhorn ({"name": "fly_to_location", "args": {"latitude": 45.9765, "longitude": 7.6585, "rangeM": 4500, "pitch": -25, "heading": 120}, "say": "Ich fliege dich zum Matterhorn im 3D-Alpenpanorama."}), Mariana Trench, or Tromsø Aurora.\n'
+  + '3. Option Breaking OSINT Hotspot: If breaking OSINT or botnet dispatches indicate urgent tactical activity, navigate there and activate live-osint or drone-attacks with a clear German explanation.\n'
+  + 'Never call frame_overhead for "was cooles" — always provide high-impact 3D navigation and cinematic angles!',
   'SHOW FLIGHT TRAFFIC ("zeig mir den Flugverkehr", "Flugverkehr über Austin", "Flugverkehr", "zeige Flugzeuge", "show flight traffic"): ALWAYS use select_nearest_aircraft with layerId: "flights" (pass locationQuery if a city or country is named, e.g. {"name": "select_nearest_aircraft", "args": {"layerId": "flights", "locationQuery": "Austin"}, "say": "Ich schalte den Flugverkehr ein und verfolge den nächsten Flug über Austin."})! This turns on flights and tracks an aircraft in 3D.',
   'GENERIC / NEAREST SATELLITE: \"show me a satellite\", \"zeige mir einen Satelliten\", including the common misspelling \"Sateliten\", or \"nearest satellite\" means track_entity with query \"nearest satellite\" (the satellites layer enables itself). \"ein anderer Satellit\", \"einen anderen Satelliten\", \"another satellite\", or \"different satellite\" after a previously tracked satellite means track_entity with query \"nearest satellite\" AND differentFromSelected:true — a DIFFERENT satellite must be picked, never the one already followed. For several satellites or traffic overhead, use frame_overhead with target \"satellites\". A concrete identity such as ISS, Hubble, or SATGUS still uses track_entity with that identity.',
   'NEAREST-AIRCRAFT PLACES: "flugzeug über Japan", "plane over Japan", "aircraft near Austin", or any other over/near/in PLACE phrasing MUST pass locationQuery with that place. NEVER omit the place and silently use the current camera. For "ein anderes", "another", "next", or "different" after a previous aircraft, pass differentFromSelected:true and preserve the previous place from history/context.',
@@ -136,11 +140,11 @@ export function hasReferenceWords(text) {
  */
 export function buildRouterMessage(text, historyEntries, sceneContext = '') {
   const history = buildRouterHistory(historyEntries);
-  const clean = String(text || '').trim().slice(0, 300);
-  const scene = String(sceneContext || '').trim().slice(0, 800);
+  const clean = String(text || '').trim().slice(0, 500);
+  const scene = String(sceneContext || '').trim().slice(0, 3500);
   const parts = [];
   if (history) parts.push(`Conversation so far:\n${history}`);
-  if (scene) parts.push(`Current scene (camera place, selection, layers):\n${scene}`);
+  if (scene) parts.push(`MULTI-SYSTEM LIVE CONTEXT (Camera, Layers, Botnet/OSINT, Markets, Wonders):\n${scene}`);
   parts.push(history || scene ? `Now the user says: "${clean}"` : `The user says: "${clean}" (no prior conversation)`);
   return parts.join('\n\n');
 }
@@ -719,10 +723,23 @@ export function synthRouterSay(name, args = {}, lang = 'en') {
   }
 
   if (name === 'select_nearest_aircraft') {
+    const isMilitary = a.layerId === 'military';
     if (a.differentFromSelected === true) {
-      return de ? 'Wähle ein anderes Flugzeug.' : 'Selecting another aircraft.';
+      return de
+        ? (isMilitary ? 'Wähle einen anderen Militärflug.' : 'Wähle ein anderes Flugzeug.')
+        : (isMilitary ? 'Selecting another military flight.' : 'Selecting another aircraft.');
     }
-    return de ? 'Wähle das nächste Flugzeug.' : 'Selecting the nearest aircraft.';
+    return de
+      ? (isMilitary ? 'Wähle den nächsten Militärflug.' : 'Wähle das nächste Flugzeug.')
+      : (isMilitary ? 'Selecting the nearest military flight.' : 'Selecting the nearest aircraft.');
+  }
+
+  if (name === 'frame_overhead') {
+    const target = q(a.target || 'flights');
+    if (target === 'military') return de ? 'Zeige Militärflüge im Überblick.' : 'Framing military flights overhead.';
+    if (target === 'satellites') return de ? 'Zeige Satelliten im Orbit.' : 'Framing satellites overhead.';
+    if (target === 'vessels') return de ? 'Zeige Schiffe im Überblick.' : 'Framing vessels.';
+    return de ? 'Zeige Flugverkehr im Überblick.' : 'Framing flight traffic overhead.';
   }
 
   if (name === 'stop_tracking') {

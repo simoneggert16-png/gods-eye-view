@@ -121,6 +121,11 @@ export const WORLD_LANDMARKS = Object.freeze([
   { name: 'Petronas Towers, Kuala Lumpur', lat: 3.1579, lon: 101.7116, kind: 'building', aliases: ['petronas towers', 'petronas türme', 'petronas tuerme'] },
   { name: 'Marina Bay Sands, Singapore', lat: 1.2836, lon: 103.8607, kind: 'building', aliases: ['marina bay sands', 'marina bay'] },
   { name: 'Angkor Wat, Cambodia', lat: 13.4125, lon: 103.867, kind: 'place', aliases: ['angkor wat', 'angkor'] },
+  { name: 'Mount Everest, Himalayas', lat: 27.9881, lon: 86.9250, kind: 'mountain', aliases: ['mount everest', 'everest', 'chomolungma', 'sagarmāthā'] },
+  { name: 'Matterhorn, Alps', lat: 45.9765, lon: 7.6585, kind: 'mountain', aliases: ['matterhorn', 'mont cervin', 'monte cervino'] },
+  { name: 'Victoria Falls', lat: -17.9243, lon: 25.8572, kind: 'place', aliases: ['victoria falls', 'victoriafälle', 'victoriafaelle', 'mosi-oa-tunya'] },
+  { name: 'Mariana Trench (Challenger Deep)', lat: 11.3733, lon: 142.5917, kind: 'place', aliases: ['mariana trench', 'marianengraben', 'challenger deep', 'challengertief'] },
+  { name: 'Tromsø (Aurora Borealis)', lat: 69.6492, lon: 18.9553, kind: 'place', aliases: ['aurora borealis tromsø', 'polarlichter tromsø', 'tromsø', 'tromsoe'] },
   { name: 'Sydney Opera House', lat: -33.8568, lon: 151.2153, kind: 'building', aliases: ['sydney opera house', 'opernhaus sydney', 'sydney oper', 'opera house sydney'] },
   { name: 'Sydney Harbour Bridge', lat: -33.8523, lon: 151.2108, kind: 'building', aliases: ['sydney harbour bridge', 'hafenbrücke sydney'] },
   // ---- Early-warning / intel sites (domes, radomes) ---------------------------

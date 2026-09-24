@@ -1067,6 +1067,10 @@ export function createGevActionRunner({ viewer, styleManager, dataManager, scene
     }
 
     if (name === 'fly_to_location') {
+      const targetLayer = normalizeLayerId(args.layerToEnable || args.enableLayer || args.layer);
+      if (targetLayer && dataManager.layers.has(targetLayer) && !dataManager.isEnabled(targetLayer)) {
+        await runGevAction('set_layer_visibility', { layerId: targetLayer, enabled: true }, runOptions);
+      }
       return flyToRequestedLocation(viewer, args, {
         runImmediate: typeof styleManager?.runImmediateLocationNavigation === 'function'
           ? (navigate) => styleManager.runImmediateLocationNavigation(navigate)
@@ -3203,10 +3207,12 @@ async function flyToRequestedLocation(viewer, args, {
   if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
     const defaultRange = args.viewMode === 'close' ? 2500 : (args.viewMode === 'overview' ? 35000 : 12000);
     const resolvedRange = rangeM || defaultRange;
+    const resolvedPitch = Number.isFinite(Number(args.pitch)) ? Number(args.pitch) : -35;
+    const resolvedHeading = Number.isFinite(Number(args.heading)) ? Number(args.heading) : 0;
     const result = immediate(() => flyToLandmark(viewer, latitude, longitude, {
       range: resolvedRange,
-      pitch: -35,
-      heading: 0,
+      pitch: resolvedPitch,
+      heading: resolvedHeading,
       buildingHeight: 0,
       duration: 2.2,
       onStart: immediateOnStart,
@@ -3256,6 +3262,8 @@ async function flyToRequestedLocation(viewer, args, {
     const managedDeferred = typeof reassertDeferred === 'function';
     const destination = await searchAndFlyTo(viewer, query, {
       ...(rangeM ? { range: rangeM } : {}),
+      ...(Number.isFinite(Number(args.pitch)) ? { pitch: Number(args.pitch) } : {}),
+      ...(Number.isFinite(Number(args.heading)) ? { heading: Number(args.heading) } : {}),
       forceClose: args.viewMode === 'close',
       // 'overview' frames the geocode viewport even for precise-place results —
       // previously dropped here, so "overview of Zilker Park" flew to a rooftop.
@@ -3314,6 +3322,19 @@ function normalizeLocationId(value) {  const raw = String(value || '').trim().to
 
 function getCurrentViewState(viewer, styleManager, dataManager, sceneDirector = null) {
   const cartographic = Cesium.Cartographic.fromCartesian(viewer.camera.positionWC);
+  let lookTarget = null;
+  try {
+    const target = getViewTargetCartographic(viewer);
+    if (target) {
+      lookTarget = {
+        latitude: Number(Cesium.Math.toDegrees(target.latitude).toFixed(5)),
+        longitude: Number(Cesium.Math.toDegrees(target.longitude).toFixed(5)),
+        heightM: Math.round(target.height || 0),
+      };
+    }
+  } catch {
+    lookTarget = null;
+  }
   return {
     ok: true,
     action: 'get_current_view_state',
@@ -3321,6 +3342,10 @@ function getCurrentViewState(viewer, styleManager, dataManager, sceneDirector = 
       latitude: Cesium.Math.toDegrees(cartographic.latitude),
       longitude: Cesium.Math.toDegrees(cartographic.longitude),
       heightM: cartographic.height,
+      headingDeg: Math.round(Cesium.Math.toDegrees(viewer.camera.heading || 0)),
+      pitchDeg: Math.round(Cesium.Math.toDegrees(viewer.camera.pitch || 0)),
+      rollDeg: Math.round(Cesium.Math.toDegrees(viewer.camera.roll || 0)),
+      lookTarget,
     },
     style: styleManager.activeStyle || 'normal',
     context: typeof styleManager.getContextModeState === 'function'

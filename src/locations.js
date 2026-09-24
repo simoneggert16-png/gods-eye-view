@@ -638,8 +638,8 @@ export async function searchAndFlyTo(viewer, query, options = {}) {
   if (!mayFly()) return CANCELLED_SEARCH;
   const flight = flyToLandmark(viewer, buildingBounds?.lat ?? lat, buildingBounds?.lon ?? lng, {
     range,
-    pitch: buildingPitch(buildingBounds),
-    heading: 30,
+    pitch: Number.isFinite(options.pitch) ? options.pitch : buildingPitch(buildingBounds),
+    heading: Number.isFinite(options.heading) ? options.heading : 30,
     buildingHeight: 30,
     buildingBounds,
     duration,

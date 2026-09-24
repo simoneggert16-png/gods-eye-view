@@ -27,6 +27,8 @@
 
 import { buildPlaceFixMessage, buildRouterMessage, extractDegenerateRouterCall, extractDirectAnswer, extractPlaceFix, extractRouterCall, hasReferenceWords, isCompleteRouterCall, ROUTER_SYSTEM_PROMPT, ROUTER_VISION_ADDENDUM, synthRouterSay } from './gevChatRouter.js';
 import { stableActionKey } from './gevGemini.js';
+import { SEED_OSINT_RECORDS } from '../data/liveOsintLayer.js';
+import { SEED_MARKET_DATA } from '../data/geoMarketEngine.js';
 
 /** Tool-call layer ids, mirroring the set_layer_visibility enum. */
 const FREE_VOICE_LAYERS = Object.freeze([
@@ -1455,14 +1457,88 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     try { log?.push?.(who, text, calls); } catch { /* logging never breaks voice */ }
   };
 
-  /** Best-effort live scene snapshot shared by ask/describe flows. */
+  /** Best-effort multi-system live snapshot shared by ask/describe/routing flows. */
   async function readContextText() {
     try {
-      const [view, entity] = await Promise.all([
+      const [viewState, entity] = await Promise.all([
         Promise.resolve().then(() => runner('get_current_view_state', {})).catch(() => null),
         Promise.resolve().then(() => runner('get_entity_context', { scope: 'auto' })).catch(() => null),
       ]);
-      return JSON.stringify({ view, entity }).slice(0, 1500);
+
+      const parts = [];
+
+      // 1. Camera Location & Orientation & Ground Gaze
+      if (viewState?.camera) {
+        const cam = viewState.camera;
+        let camStr = `CAMERA: lat ${cam.latitude}°, lon ${cam.longitude}°, alt ${Math.round(cam.heightM || 0)}m, heading ${cam.headingDeg || 0}°, pitch ${cam.pitchDeg || 0}°`;
+        if (cam.lookTarget) {
+          camStr += ` | LOOKING AT GROUND: lat ${cam.lookTarget.latitude}°, lon ${cam.lookTarget.longitude}°`;
+        }
+        parts.push(camStr);
+      } else if (viewState) {
+        parts.push(`VIEW STATE: ${JSON.stringify(viewState)}`);
+      }
+
+      // 2. Active Layers & Loaded Entities
+      if (Array.isArray(viewState?.layers)) {
+        const active = viewState.layers
+          .filter((l) => l.enabled)
+          .map((l) => `${l.name || l.id} (${l.count} items)`);
+        parts.push(`ACTIVE DATA LAYERS: ${active.length ? active.join(', ') : 'none'}`);
+      }
+
+      // 3. Selected or Tracked Entity
+      if (Array.isArray(viewState?.tracked) && viewState.tracked.length) {
+        const tr = viewState.tracked.map((t) => `${t.kind || 'object'}: ${t.label || t.id}`).join(', ');
+        parts.push(`TRACKED ENTITY: ${tr}`);
+      } else if (entity?.selected) {
+        parts.push(`SELECTED ENTITY: ${JSON.stringify(entity.selected).slice(0, 200)}`);
+      }
+
+      // 4. Live Botnet / OSINT Breaking Dispatches
+      let osintSummary = '';
+      try {
+        if (typeof window !== 'undefined' && window.__godsEyeView?.visitorTracker?.getRecentEvents) {
+          const events = window.__godsEyeView.visitorTracker.getRecentEvents() || [];
+          if (events.length) {
+            osintSummary = events.slice(0, 3).map((e) => `[${e.type || 'botnet'}]: ${e.summary || e.title || JSON.stringify(e)}`).join('; ');
+          }
+        }
+      } catch { /* best effort */ }
+      if (!osintSummary && typeof SEED_OSINT_RECORDS !== 'undefined' && Array.isArray(SEED_OSINT_RECORDS)) {
+        osintSummary = SEED_OSINT_RECORDS.slice(0, 3).map((r) => `[${r.locationName} - ${r.weaponSystem || r.category}]: ${r.summary}`).join('; ');
+      }
+      if (osintSummary) {
+        parts.push(`BREAKING OSINT/BOTNET: ${osintSummary.slice(0, 400)}`);
+      }
+
+      // 5. Geopolitical Financial Markets
+      if (typeof SEED_MARKET_DATA !== 'undefined' && Array.isArray(SEED_MARKET_DATA)) {
+        const brent = SEED_MARKET_DATA.find((q) => q.symbol === 'BZ=F');
+        const gold = SEED_MARKET_DATA.find((q) => q.symbol === 'GC=F');
+        const sp = SEED_MARKET_DATA.find((q) => q.symbol === '^GSPC');
+        const rhm = SEED_MARKET_DATA.find((q) => q.symbol === 'RHM.DE');
+        parts.push(`GEOPOLITICAL MARKETS: Brent Oil $${brent?.price || '95.94'} (${brent?.changePct || '0%'}), Gold $${gold?.price || '4388'}, S&P500 ${sp?.price || '7764'}, Rheinmetall €${rhm?.price || '1010'}`);
+      }
+
+      // 6. Curated World Wonders / 3D Destinations Catalog (for open / "was cooles" asks)
+      parts.push(
+        'WORLD WONDERS CATALOG (for spectacular 3D exploration): '
+        + 'Mount Everest (lat 27.9881, lon 86.9250, range 7000m, pitch -25°), '
+        + 'Grand Canyon (lat 36.0544, lon -112.1401, range 4500m, pitch -35°), '
+        + 'Giza Pyramids (lat 29.9792, lon 31.1342, range 2200m, pitch -30°), '
+        + 'Matterhorn (lat 45.9765, lon 7.6585, range 4500m, pitch -25°), '
+        + 'Mariana Trench (lat 11.3733, lon 142.5917, range 50000m, pitch -45°), '
+        + 'Tromsø Aurora (lat 69.6492, lon 18.9553, range 15000m, pitch -30°), '
+        + 'Victoria Falls (lat -17.9243, lon 25.8572, range 3000m, pitch -35°), '
+        + 'Active Supersonic Military Jet (select_nearest_aircraft military), '
+        + 'ISS Space Station (track_entity ISS).'
+      );
+
+      if (!parts.length) {
+        return JSON.stringify({ view: viewState, entity }).slice(0, 3000);
+      }
+      return parts.join('\n\n').slice(0, 3500);
     } catch {
       return '';
     }

@@ -14,10 +14,10 @@ import { CHAT_SYSTEM_PROMPT_MAX_CHARS, cleanVisionImages } from './gevOllama.js'
 export const ABACUS_DEFAULT_MODEL = 'deepseek-ai/DeepSeek-V4.1-Flash';
 
 /** Longest user message sent. */
-export const ABACUS_MAX_MESSAGE_CHARS = 1000;
+export const ABACUS_MAX_MESSAGE_CHARS = 6000;
 
 /** Scene-context budget appended under each message. */
-export const ABACUS_MAX_CONTEXT_CHARS = 1500;
+export const ABACUS_MAX_CONTEXT_CHARS = 4000;
 
 /** Cap on upstream chat bytes we will buffer. */
 export const ABACUS_MAX_RESPONSE_BYTES = 32 * 1024;
@@ -82,7 +82,7 @@ export function buildAbacusChatRequest({ message, contextText = '', model, syste
         { role: 'user', content: userContent },
       ],
       temperature: 0.4,
-      max_tokens: 400,
+      max_tokens: 800,
     },
   };
 }

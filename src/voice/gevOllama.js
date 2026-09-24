@@ -26,7 +26,7 @@ export const OLLAMA_MAX_CONTEXT_CHARS = 1500;
 export const OLLAMA_MAX_RESPONSE_BYTES = 32 * 1024;
 
 /** Shared chat-brain system-prompt budget (router prompt + vision addendum). */
-export const CHAT_SYSTEM_PROMPT_MAX_CHARS = 16000;
+export const CHAT_SYSTEM_PROMPT_MAX_CHARS = 32000;
 
 /** System prompt: brief globe-assistant voice, grounded, honest. */
 export const OLLAMA_SYSTEM_PROMPT = [
