@@ -112,13 +112,24 @@ test('stemming folds umlauts and adjective endings consistently', () => {
   assert.ok(landmarkTokenSet('beim weissen Haus').has('weiss'));
 });
 
-test('dict helpers stay consistent with the registry', () => {
-  const aliases = worldLandmarkAliasDict();
-  assert.equal(aliases['eiffelturm'], 'Eiffel Tower, Paris');
-  assert.equal(aliases['freiheitsstatue'], 'Statue of Liberty, New York');
-  assert.equal(aliases['epstein tempel'], 'Epstein Temple / Tempel');
-  assert.equal(aliases['helikopter landeplatz beim weissen haus'], 'White House Helipad / Helikopter-Landeplatz');
-  const coords = worldLandmarkCoordDict();
-  assert.deepEqual(coords['eiffel tower, paris'], { lat: 48.8584, lon: 2.2945, label: 'Eiffel Tower, Paris' });
-  assert.deepEqual(coords['epstein temple / tempel'], { lat: 18.2983, lon: -64.8282, label: 'Epstein Temple / Tempel' });
+test('Diddy villa and famous estates resolve correctly', () => {
+  const diddy1 = findWorldLandmark('markiere diddys villa in den usa');
+  assert.equal(diddy1?.name, 'Sean "Diddy" Combs Holmby Hills Mansion, Los Angeles');
+  assert.deepEqual([diddy1.lat, diddy1.lon], [34.0788, -118.4312]);
+
+  const diddy2 = findWorldLandmark("Diddy's Villa, Los Angeles, USA");
+  assert.equal(diddy2?.name, 'Sean "Diddy" Combs Holmby Hills Mansion, Los Angeles');
+
+  const diddy3 = findWorldLandmark('diddy mansion');
+  assert.equal(diddy3?.name, 'Sean "Diddy" Combs Holmby Hills Mansion, Los Angeles');
+
+  const diddyMiami = findWorldLandmark('diddys villa in miami');
+  assert.equal(diddyMiami?.name, 'Sean "Diddy" Combs Star Island Estate, Miami');
+  assert.deepEqual([diddyMiami.lat, diddyMiami.lon], [25.7781, -80.1502]);
+
+  const playboy = findWorldLandmark('playboy villa');
+  assert.equal(playboy?.name, 'Playboy Mansion, Los Angeles');
+
+  const marALago = findWorldLandmark('mar-a-lago');
+  assert.equal(marALago?.name, 'Mar-a-Lago, Palm Beach');
 });

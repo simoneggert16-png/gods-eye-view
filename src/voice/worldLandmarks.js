@@ -98,6 +98,71 @@ export const WORLD_LANDMARKS = Object.freeze([
   // ---- Caribbean / Little Saint James (Epstein Island) ---------------------
   { name: 'Epstein Main House / Hauptgebäudekomplex', lat: 18.3015, lon: -64.8260, kind: 'building', aliases: ['epstein main house', 'epstein haupthaus', 'hauptgebäudekomplex', 'hauptgebaeude', 'hauptgebäudekomplex epstein', 'epstein anwesen', 'little saint james main house', 'little saint james mansion'] },
   { name: 'Epstein Temple / Tempel', lat: 18.2983, lon: -64.8282, kind: 'building', aliases: ['epstein temple', 'epstein tempel', 'epsteins tempel', 'the temple little saint james', 'little saint james temple', 'seinen tempel', 'tempel auf der insel'] },
+  // ---- Famous Estates & Mansions (USA) ---------------------------------------
+  {
+    name: 'Sean "Diddy" Combs Holmby Hills Mansion, Los Angeles',
+    lat: 34.0788,
+    lon: -118.4312,
+    kind: 'building',
+    aliases: [
+      'diddys villa', 'diddy villa', 'diddys villa in den usa', 'diddy villa in den usa',
+      'diddys villa in los angeles', 'diddy villa in los angeles', 'diddys mansion', 'diddy mansion',
+      'diddys anwesen', 'diddy anwesen', 'diddys haus', 'diddy haus', 'diddys haus in los angeles',
+      'diddys estate', 'diddy estate', 'sean combs mansion', 'sean combs villa', 'sean combs anwesen',
+      '400 south mapleton drive', '400 s mapleton dr', '400 south mapleton dr', '400 s mapleton drive',
+      'diddys haus usa', 'diddys villa usa',
+    ],
+    keywords: [
+      ['diddy', 'villa'],
+      ['diddys', 'villa'],
+      ['diddy', 'mansion'],
+      ['diddys', 'mansion'],
+      ['diddy', 'haus'],
+      ['diddys', 'haus'],
+      ['diddy', 'anwesen'],
+      ['diddys', 'anwesen'],
+      ['combs', 'villa'],
+      ['combs', 'mansion'],
+    ],
+  },
+  {
+    name: 'Sean "Diddy" Combs Star Island Estate, Miami',
+    lat: 25.7781,
+    lon: -80.1502,
+    kind: 'building',
+    aliases: [
+      'diddys miami villa', 'diddy miami villa', 'diddys villa in miami', 'diddy villa in miami',
+      'diddys miami mansion', 'diddy miami mansion', 'diddys star island', 'diddy star island',
+      'diddys star island villa', 'diddys haus in miami', 'diddys anwesen in miami',
+    ],
+    keywords: [
+      ['diddy', 'miami'],
+      ['diddys', 'miami'],
+      ['diddy', 'star', 'island'],
+      ['diddys', 'star', 'island'],
+    ],
+  },
+  {
+    name: 'Playboy Mansion, Los Angeles',
+    lat: 34.0768,
+    lon: -118.4297,
+    kind: 'building',
+    aliases: ['playboy mansion', 'playboy villa', 'hugh hefner mansion', 'hugh hefner villa', 'playboy anwesen'],
+  },
+  {
+    name: 'Neverland Ranch, California',
+    lat: 34.7447,
+    lon: -120.0883,
+    kind: 'place',
+    aliases: ['neverland', 'neverland ranch', 'michael jackson ranch', 'michael jackson anwesen', 'sycamore valley ranch'],
+  },
+  {
+    name: 'Mar-a-Lago, Palm Beach',
+    lat: 26.6771,
+    lon: -80.0370,
+    kind: 'building',
+    aliases: ['mar-a-lago', 'mar a lago', 'trumps villa', 'trump villa', 'trump anwesen', 'trump estate'],
+  },
   // ---- Latin America --------------------------------------------------------
   { name: 'Christ the Redeemer, Rio', lat: -22.9519, lon: -43.2105, kind: 'building', aliases: ['christ the redeemer', 'cristo redentor', 'christusstatue rio', 'christus rio', 'jesusstatue rio'] },
   { name: 'Machu Picchu', lat: -13.1631, lon: -72.545, kind: 'place', aliases: ['machu picchu'] },
@@ -204,10 +269,12 @@ const LANDMARK_TOKEN_STOPWORDS = new Set([
  */
 export function stemLandmarkToken(word) {
   let w = String(word || '').toLowerCase().normalize('NFC')
+    .replace(/[''´`]/g, '')
     .replace(/ß/g, 'ss')
     .replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u');
   w = w.replace(/[^a-z0-9]/g, '')
     .replace(/ae/g, 'a').replace(/oe/g, 'o').replace(/ue/g, 'u');
+  if (w.length >= 4 && w.endsWith('s') && !w.endsWith('ss')) w = w.slice(0, -1);
   if (w.length >= 5) w = w.replace(/(es|en|em|er|e)$/, '');
   return w;
 }
@@ -251,7 +318,8 @@ export function normalizeLandmarkText(value) {
   return String(value || '')
     .toLowerCase()
     .normalize('NFC')
-    .replace(/[''´`]/g, "'")
+    .replace(/[''´`]/g, '')
+    .replace(/,/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/^(der|die|das|den|dem|des|the|le|la|les)\s+/i, '')

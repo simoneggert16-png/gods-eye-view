@@ -678,6 +678,20 @@ async function geocodePlace(query, biasRect, signal) {
     const response = await fetch(url, { signal });
     const data = await response.json();
     if (data.status !== 'OK' || !data.results?.length) {
+      const landmark = findWorldLandmark(query);
+      if (landmark) {
+        const primaryName = landmark.name.split(',')[0].trim() || landmark.name;
+        const place = {
+          lat: landmark.lat,
+          lon: landmark.lon,
+          label: landmark.name,
+          primaryName,
+          types: landmark.kind === 'mountain' ? ['natural_feature'] : ['point_of_interest', 'establishment'],
+          viewport: null,
+        };
+        cacheWrite(geocodeCache, cacheKey, place);
+        return place;
+      }
       // ZERO_RESULTS is a definitive not-found (cacheable); OVER_QUERY_LIMIT /
       // REQUEST_DENIED / UNKNOWN_ERROR are transient → don't poison the cache.
       negCache(geocodeCache, cacheKey, signal, data?.status === 'ZERO_RESULTS');
