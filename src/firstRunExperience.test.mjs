@@ -577,7 +577,10 @@ test('markup, startup ordering and accessibility remain pinned', () => {
   assert.doesNotMatch(html, /data-first-run-choice="infrastructure"/,
     'the removed tile must leave no markup behind');
 
-  const startup = main.slice(main.indexOf('void Promise.all(['), main.indexOf('// Expose for debugging'));
+  const startupStart = main.indexOf('void Promise.race([') >= 0
+    ? main.indexOf('void Promise.race([')
+    : main.indexOf('void Promise.all([');
+  const startup = main.slice(startupStart, main.indexOf('// Expose for debugging'));
   assert.match(startup, /styleManager\.initialRestorePromise/);
   assert.ok(startup.indexOf("loadingScreen.classList.add('hidden')") < startup.indexOf('initFirstRunExperience'));
   assert.match(startup, /initFirstRunExperience\(\{ styleManager, dataManager \}\)/);

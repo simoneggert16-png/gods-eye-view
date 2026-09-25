@@ -299,9 +299,17 @@ async function init() {
 
     // Keep startup chrome truthful: a share is not restored until camera,
     // visual/map/panel lanes, and every requested layer have terminated.
-    void Promise.all([
-      styleManager.initialRestorePromise,
-      new Promise((resolve) => setTimeout(resolve, 1000)),
+    // Bounded fallback (field fix 2026-09-25): on Render cold start (free plan
+    // sleeps ~50s) or when a PIN-gated API stalls the layer restore, the
+    // initialRestorePromise could hang forever on "Restoring shared view...".
+    // Race with a 12s timeout so the loader ALWAYS hides and the globe stays
+    // usable; late restores still settle in the background.
+    void Promise.race([
+      Promise.all([
+        styleManager.initialRestorePromise,
+        new Promise((resolve) => setTimeout(resolve, 1000)),
+      ]),
+      new Promise((resolve) => setTimeout(() => resolve({ status: 'restore-timeout' }), 12000)),
     ]).finally(() => {
       loadingScreen.classList.add('hidden');
       // Reveal only after the loading cover has yielded. transitionend can be
