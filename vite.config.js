@@ -3115,9 +3115,21 @@ export const ADSBLOL_WORLD_HUBS = Object.freeze([
   { lat: 1.35, lon: 103.82 }, // Singapore — SE Asia
   { lat: 35.68, lon: 139.69 }, // Tokyo — East Asia
   { lat: -33.87, lon: 151.21 }, // Sydney — Oceania
+  // Oceanic gap-fillers: island feeders that see the escapes the land hubs
+  // miss (transatlantic tracks via Azores/Iceland/Gander, Pacific crossings
+  // via Hawaii/Guam/Fiji, Indian Ocean via Mauritius/Maldives). Truly
+  // feeder-less water (central Pacific voids, polar routes) stays dark.
+  { lat: 37.74, lon: -25.67 }, // Azores — mid-Atlantic east
+  { lat: 63.99, lon: -22.6 }, // Iceland — North Atlantic
+  { lat: 48.94, lon: -54.57 }, // Gander — West Atlantic
+  { lat: 21.32, lon: -157.92 }, // Hawaii — Central Pacific
+  { lat: 13.44, lon: 144.79 }, // Guam — West Pacific
+  { lat: -17.75, lon: 177.44 }, // Fiji — South Pacific
+  { lat: -20.16, lon: 57.5 }, // Mauritius — Indian Ocean
+  { lat: 4.19, lon: 73.53 }, // Maldives — Indian Ocean
 ]);
 /** How many world hubs refresh per serve cycle (round-robin; bounds upstream cost). */
-const ADSBLOL_HUBS_PER_CYCLE = 3;
+const ADSBLOL_HUBS_PER_CYCLE = 4;
 /** Round-robin cursor across ADSBLOL_WORLD_HUBS (module-local). */
 let _adsbLolHubCursor = 0;
 

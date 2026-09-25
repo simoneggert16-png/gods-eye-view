@@ -41,7 +41,7 @@ test('builds an extended=1 HTTPS request with optional bearer auth', () => {
 });
 
 test('world hubs cover every inhabited continent with stable cache keys', () => {
-  assert.ok(ADSBLOL_WORLD_HUBS.length >= 8, 'enough discs for a coarse global picture');
+  assert.ok(ADSBLOL_WORLD_HUBS.length >= 16, 'land hubs plus oceanic gap-fillers');
   const keys = new Set();
   for (const hub of ADSBLOL_WORLD_HUBS) {
     assert.ok(Number.isFinite(hub.lat) && hub.lat >= -90 && hub.lat <= 90, 'valid latitude');
