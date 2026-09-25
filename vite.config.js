@@ -1626,6 +1626,36 @@ function buildOpenSkyHeaders({ cacheStatus, requestedMode, usedMode, reason, sta
 }
 
 /**
+ * Build the request for the Cloudflare OpenSky bridge worker (see
+ * workers/opensky-bridge.js). The bridge fetches the worldwide snapshot from
+ * a network that OpenSky does not block (Render's egress cannot reach
+ * opensky-network.org at all) and hands it to this proxy.
+ *
+ * Only HTTPS bridge URLs are accepted; anything else (empty, unparsable,
+ * non-HTTPS) returns null and the caller falls back to the direct path.
+ * Exported for tests.
+ *
+ * @param {{bridgeUrl?: string, bridgeToken?: string}} [options]
+ * @returns {{url: string, headers: Record<string,string>}|null}
+ */
+export function buildOpenSkyBridgeRequest({ bridgeUrl, bridgeToken } = {}) {
+  const base = String(bridgeUrl || '').trim().replace(/\/+$/, '');
+  if (!base) return null;
+  let url;
+  try {
+    url = new URL(base);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'https:') return null;
+  url.searchParams.set('extended', '1');
+  const headers = { Accept: 'application/json' };
+  const token = String(bridgeToken || '').trim();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return { url: url.href, headers };
+}
+
+/**
  * Vite plugin: CelesTrak TLE proxy.
  *
  * CelesTrak does not send CORS headers, so this middleware fetches
@@ -3258,9 +3288,38 @@ function openSkyProxy() {
             }
           }
 
-          let upstream = await fetch('https://opensky-network.org/api/states/all?extended=1', { headers });
+          // Cloudflare bridge first (field fix 2026-09-25): Render's egress
+          // cannot reach opensky-network.org at all, so when OPENSKY_BRIDGE_URL
+          // is configured the worldwide snapshot comes via the worker
+          // (workers/opensky-bridge.js). A failed bridge attempt falls through
+          // to the direct path below.
+          let upstream = null;
+          let usedBridge = false;
+          const bridge = buildOpenSkyBridgeRequest({
+            bridgeUrl: process.env.OPENSKY_BRIDGE_URL,
+            bridgeToken: process.env.OPENSKY_BRIDGE_TOKEN,
+          });
+          if (bridge) {
+            try {
+              const attempt = await fetch(bridge.url, { headers: bridge.headers });
+              if (attempt.ok) {
+                upstream = attempt;
+                usedBridge = true;
+                usedMode = 'bridge';
+                reason = 'bridge_ok';
+              } else {
+                try { await attempt.body?.cancel?.(); } catch { /* no-op */ }
+              }
+            } catch {
+              upstream = null;
+            }
+          }
+          if (!upstream) {
+            upstream = await fetch('https://opensky-network.org/api/states/all?extended=1', { headers });
+          }
           // Auto-mode fallback: if OAuth was rejected, retry with Basic credentials
           if (
+            !usedBridge &&
             (upstream.status === 401 || upstream.status === 403) &&
             requestedMode === 'auto' &&
             usedMode === 'oauth' &&

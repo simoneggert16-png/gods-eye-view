@@ -26,3 +26,7 @@
         sync: false
       - key: OPENSKY_CLIENT_SECRET
         sync: false
+      - key: OPENSKY_BRIDGE_URL
+        sync: false
+      - key: OPENSKY_BRIDGE_TOKEN
+        sync: false
