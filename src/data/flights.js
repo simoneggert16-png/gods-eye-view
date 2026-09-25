@@ -5229,6 +5229,10 @@ const flightsLayer = {
       retryInSec,
       source: _lastSource,
       coverage: _lastCoverage,
+      // The reported snapshot — worldwide OpenSky or 250nm adsb.lol regional
+      // radar — IS the live feed, never a degraded fallback state. Fresh data
+      // renders ON; age and errors still surface via stale/error/unavailable.
+      fallback: false,
     };
   },
 };

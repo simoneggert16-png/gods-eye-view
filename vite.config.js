@@ -3125,7 +3125,7 @@ async function serveAdsbLolPointFallback(req, res, requestedMode, reason) {
       reason,
     }),
     'X-Flight-Source': 'adsb.lol',
-    'X-Flight-Coverage': `${ADSBLOL_POINT_RADIUS_NM}nm regional fallback`,
+    'X-Flight-Coverage': `${ADSBLOL_POINT_RADIUS_NM}nm regional radar`,
     'X-Flight-Count': String(fallback.count),
   });
   res.end(fallback.body);

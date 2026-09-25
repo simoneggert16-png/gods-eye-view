@@ -17,6 +17,7 @@ import flightsLayer, {
   mapAnalystRecord,
 } from './flights.js';
 import { setMilitaryLayerActive } from './militaryRegistry.js';
+import { layerFeedState } from './manager.js';
 import {
   GROUND_FLOOR_LIFT_M, reportMeshFloorCell,
   setMeshFloorPreferred, _clearMeshFloorCellsForTest,
@@ -166,6 +167,23 @@ test('nonempty OpenSky payload with zero usable rows cannot prove share target a
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test('live feed stats never render a FALLBACK chip — regional radar is primary', () => {
+  // The reported snapshot (worldwide OpenSky or 250nm adsb.lol regional
+  // radar) is always the live feed: the chip reads ON while fresh, and age
+  // or errors surface as STALE/DEGRADED/UNAVAILABLE — never FALLBACK.
+  assert.equal(flightsLayer.getStats().fallback, false);
+  assert.equal(layerFeedState({
+    count: 240,
+    lastUpdate: Date.now(),
+    stale: false,
+    error: null,
+    status: 200,
+    source: 'adsb.lol',
+    coverage: '250nm regional radar',
+    fallback: false,
+  }), 'nominal', 'a fresh regional snapshot is live, not a fallback');
 });
 
 test('flights poll refreshes tracked callsign/FL/kts and marks a missed poll STALE', async () => {
