@@ -55,14 +55,19 @@ async function getToken(env) {
   const clientId = env.OPENSKY_CLIENT_ID;
   const clientSecret = env.OPENSKY_CLIENT_SECRET;
   if (!clientId || !clientSecret) return null;
-  const res = await fetch(TOKEN_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body:
-      `grant_type=client_credentials` +
-      `&client_id=${encodeURIComponent(clientId)}` +
-      `&client_secret=${encodeURIComponent(clientSecret)}`,
-  });
+  let res;
+  try {
+    res = await fetch(TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body:
+        `grant_type=client_credentials` +
+        `&client_id=${encodeURIComponent(clientId)}` +
+        `&client_secret=${encodeURIComponent(clientSecret)}`,
+    });
+  } catch (err) {
+    throw new Error(`token fetch failed: ${err?.message || String(err)}`);
+  }
   let data = null;
   try {
     data = await res.json();
@@ -72,7 +77,8 @@ async function getToken(env) {
   if (!res.ok || !data?.access_token) {
     _token = null;
     _tokenExpiry = 0;
-    return null;
+    const detail = data?.error_description || data?.error || `HTTP ${res.status}`;
+    throw new Error(`token rejected: ${detail}`);
   }
   _token = data.access_token;
   const expiresIn = Number(data.expires_in);
