@@ -3092,9 +3092,78 @@ export function adsbLolFallbackAnchor(req) {
 async function fetchAdsbLolPointFallback(req) {
   const anchor = adsbLolFallbackAnchor(req);
   if (!anchor) return null;
-  const roundedLat = Math.round(anchor.latitude * 4) / 4;
-  const roundedLon = Math.round(anchor.longitude * 4) / 4;
-  const cacheKey = `${roundedLat.toFixed(2)},${roundedLon.toFixed(2)}`;
+  return fetchAdsbLolPointByCoords(anchor.latitude, anchor.longitude);
+}
+
+/**
+ * Fixed worldwide hub anchors for the stitched adsb.lol snapshot. Each hub
+ * covers a 250 nm disc around a major aviation basin; together with the
+ * viewer-anchored query they replace the single-disc regional view with a
+ * coarse global picture (OpenSky itself is unreachable from Render/Cloudflare
+ * hosting ranges, so this is the widest free feed available). Oceanic and
+ * remote airspace stays uncovered — reflected in the coverage label.
+ * Exported for tests.
+ */
+export const ADSBLOL_WORLD_HUBS = Object.freeze([
+  { lat: 51.5, lon: -0.12 }, // London — Western Europe
+  { lat: 40.71, lon: -74.0 }, // New York — US East
+  { lat: 41.88, lon: -87.63 }, // Chicago — US Midwest
+  { lat: 34.05, lon: -118.24 }, // Los Angeles — US West
+  { lat: -23.55, lon: -46.63 }, // São Paulo — South America
+  { lat: 6.52, lon: 3.38 }, // Lagos — West Africa
+  { lat: 25.2, lon: 55.27 }, // Dubai — Middle East
+  { lat: 1.35, lon: 103.82 }, // Singapore — SE Asia
+  { lat: 35.68, lon: 139.69 }, // Tokyo — East Asia
+  { lat: -33.87, lon: 151.21 }, // Sydney — Oceania
+]);
+/** How many world hubs refresh per serve cycle (round-robin; bounds upstream cost). */
+const ADSBLOL_HUBS_PER_CYCLE = 3;
+/** Round-robin cursor across ADSBLOL_WORLD_HUBS (module-local). */
+let _adsbLolHubCursor = 0;
+
+/** Normalized cache key for a point anchor (shared by viewer + hub queries). Exported for tests. */
+export function adsbLolPointCacheKey(latitude, longitude) {
+  const roundedLat = Math.round(latitude * 4) / 4;
+  const roundedLon = Math.round(longitude * 4) / 4;
+  return `${roundedLat.toFixed(2)},${roundedLon.toFixed(2)}`;
+}
+
+/**
+ * Merge normalized {time, states} snapshot bodies into one de-duplicated
+ * snapshot (first-seen state vector wins per ICAO24). Exported for tests.
+ * @param {string[]} bodies - JSON snapshot bodies.
+ * @returns {{time:number,states:Array[]}}
+ */
+export function mergeAdsbLolSnapshots(bodies) {
+  const seen = new Set();
+  const states = [];
+  let time = 0;
+  for (const body of bodies) {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(String(body));
+    } catch {
+      continue;
+    }
+    if (Number.isFinite(Number(parsed?.time)) && Number(parsed.time) > 0) {
+      time = Math.max(time, Math.floor(Number(parsed.time)));
+    }
+    if (!Array.isArray(parsed?.states)) continue;
+    for (const state of parsed.states) {
+      const id = Array.isArray(state) ? String(state[0] || '').toLowerCase() : '';
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      states.push(state);
+    }
+  }
+  if (!time) time = Math.floor(Date.now() / 1000);
+  return { time, states };
+}
+
+async function fetchAdsbLolPointByCoords(latitude, longitude) {
+  const cacheKey = adsbLolPointCacheKey(latitude, longitude);
+  const roundedLat = Math.round(latitude * 4) / 4;
+  const roundedLon = Math.round(longitude * 4) / 4;
   const cached = _adsbLolPointCache.get(cacheKey);
   const now = Date.now();
   if (cached && now - cached.cachedAt < ADSBLOL_POINT_CACHE_MS) {
@@ -3145,20 +3214,38 @@ async function fetchAdsbLolPointFallback(req) {
 }
 
 async function serveAdsbLolPointFallback(req, res, requestedMode, reason) {
-  const fallback = await fetchAdsbLolPointFallback(req);
-  if (!fallback) return false;
+  const viewer = await fetchAdsbLolPointFallback(req);
+  // Refresh a rotating subset of world hubs each cycle so the merged picture
+  // stays fresh without hammering the free upstream (3 hubs × ~30 s polls ≈
+  // full rotation every ~100 s; hub snapshots persist in the shared cache).
+  const rotating = [];
+  for (let i = 0; i < ADSBLOL_HUBS_PER_CYCLE; i += 1) {
+    rotating.push(ADSBLOL_WORLD_HUBS[_adsbLolHubCursor++ % ADSBLOL_WORLD_HUBS.length]);
+  }
+  await Promise.allSettled(rotating.map((hub) => fetchAdsbLolPointByCoords(hub.lat, hub.lon)));
+  // Merge the viewer disc with every cached hub disc (fresh or a few minutes
+  // old — hub rows carry their own timestamps and refresh continuously).
+  const bodies = [];
+  if (viewer) bodies.push(viewer.body);
+  for (const hub of ADSBLOL_WORLD_HUBS) {
+    const record = _adsbLolPointCache.get(adsbLolPointCacheKey(hub.lat, hub.lon));
+    if (record && (!viewer || record.body !== viewer.body)) bodies.push(record.body);
+  }
+  if (!bodies.length) return false;
+  const merged = mergeAdsbLolSnapshots(bodies);
+  if (!merged.states.length && !viewer) return false;
   res.writeHead(200, {
     ...buildOpenSkyHeaders({
-      cacheStatus: fallback.cacheStatus,
+      cacheStatus: viewer?.cacheStatus || 'HIT',
       requestedMode,
-      usedMode: 'adsblol-regional',
+      usedMode: 'adsblol-multihub',
       reason,
     }),
     'X-Flight-Source': 'adsb.lol',
-    'X-Flight-Coverage': `${ADSBLOL_POINT_RADIUS_NM}nm regional radar`,
-    'X-Flight-Count': String(fallback.count),
+    'X-Flight-Coverage': 'global multi-hub radar',
+    'X-Flight-Count': String(merged.states.length),
   });
-  res.end(fallback.body);
+  res.end(JSON.stringify(merged));
   return true;
 }
 
