@@ -5554,70 +5554,111 @@ function webSearchProxy() {
   };
 
   async function wikipediaSearch(query) {
-    const params = new URLSearchParams({
-      action: 'query', list: 'search', srsearch: query, format: 'json', srlimit: '3',
-    });
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 9000);
-    try {
-      const search = await fetch(`https://en.wikipedia.org/w/api.php?${params}`, {
-        signal: controller.signal, headers: HEADERS,
+    const isGerman = /[äöüß]|(?:wer|was|wo|wie|warum|und|der|die|das|von|in|den|dem|im|des)\b/i.test(query);
+    const langs = isGerman ? ['de', 'en'] : ['en', 'de'];
+    const results = [];
+    for (const lang of langs) {
+      const params = new URLSearchParams({
+        action: 'query', list: 'search', srsearch: query, format: 'json', srlimit: '3',
       });
-      if (!search.ok) return [];
-      const found = await readResponseJsonCapped(search, WEB_SEARCH_MAX_RESPONSE_BYTES);
-      const hits = Array.isArray(found?.query?.search) ? found.query.search.slice(0, 2) : [];
-      const results = [];
-      for (const hit of hits) {
-        const title = String(hit?.title || '');
-        if (!title) continue;
-        const extractParams = new URLSearchParams({
-          action: 'query', prop: 'extracts', exintro: '1', explaintext: '1',
-          titles: title, format: 'json',
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 7000);
+      try {
+        const search = await fetch(`https://${lang}.wikipedia.org/w/api.php?${params}`, {
+          signal: controller.signal, headers: HEADERS,
         });
-        try {
-          const page = await fetch(`https://en.wikipedia.org/w/api.php?${extractParams}`, {
-            signal: controller.signal, headers: HEADERS,
+        if (!search.ok) continue;
+        const found = await readResponseJsonCapped(search, WEB_SEARCH_MAX_RESPONSE_BYTES);
+        const hits = Array.isArray(found?.query?.search) ? found.query.search.slice(0, 2) : [];
+        for (const hit of hits) {
+          const title = String(hit?.title || '');
+          if (!title) continue;
+          const extractParams = new URLSearchParams({
+            action: 'query', prop: 'extracts', exintro: '1', explaintext: '1',
+            titles: title, format: 'json',
           });
-          if (!page.ok) continue;
-          const data = await readResponseJsonCapped(page, WEB_SEARCH_MAX_RESPONSE_BYTES);
-          const pages = data?.query?.pages || {};
-          const first = Object.values(pages)[0] || {};
-          const snippet = String(first?.extract || '').slice(0, 600);
-          if (!snippet) continue;
-          results.push({
-            title,
-            snippet,
-            url: `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, '_'))}`,
-            source: 'Wikipedia',
-          });
-        } catch { /* one bad page must not kill the search */ }
+          try {
+            const page = await fetch(`https://${lang}.wikipedia.org/w/api.php?${extractParams}`, {
+              signal: controller.signal, headers: HEADERS,
+            });
+            if (!page.ok) continue;
+            const data = await readResponseJsonCapped(page, WEB_SEARCH_MAX_RESPONSE_BYTES);
+            const pages = data?.query?.pages || {};
+            const first = Object.values(pages)[0] || {};
+            const snippet = String(first?.extract || '').slice(0, 600);
+            if (!snippet) continue;
+            results.push({
+              title,
+              snippet,
+              url: `https://${lang}.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, '_'))}`,
+              source: `Wikipedia (${lang.toUpperCase()})`,
+            });
+          } catch { /* one bad page must not kill the search */ }
+        }
+        if (results.length) break; // First matching language is sufficient
+      } catch {
+        /* continue to fallback language */
+      } finally {
+        clearTimeout(timer);
       }
-      return results;
-    } finally {
-      clearTimeout(timer);
     }
+    return results;
+  }
+
+  function unescapeHtmlEntities(text) {
+    return String(text || '')
+      .replace(/&quot;/g, '"')
+      .replace(/&#x27;/g, "'")
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/<[^>]+>/g, '')
+      .trim();
   }
 
   async function duckDuckGoSearch(query) {
-    const params = new URLSearchParams({ q: query, format: 'json', no_html: '1', skip_disambig: '1' });
+    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 9000);
     try {
-      const response = await fetch(`https://api.duckduckgo.com/?${params}`, {
-        signal: controller.signal, headers: HEADERS,
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
+          'Referer': 'https://html.duckduckgo.com/',
+        },
       });
       if (!response.ok) return [];
-      const data = await readResponseJsonCapped(response, WEB_SEARCH_MAX_RESPONSE_BYTES);
+      const html = await response.text();
       const results = [];
-      if (String(data?.AbstractText || '').trim()) {
-        results.push({
-          title: String(data?.Heading || query).slice(0, 160),
-          snippet: String(data.AbstractText).slice(0, 600),
-          url: String(data?.AbstractURL || ''),
-          source: 'DuckDuckGo',
-        });
+      const itemRegex = /<a[^>]+class=["'][^"']*result__a[^"']*["'][^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]+class=["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi;
+      let match;
+      while ((match = itemRegex.exec(html)) !== null && results.length < 5) {
+        const rawUrl = match[1];
+        const title = unescapeHtmlEntities(match[2]);
+        const snippet = unescapeHtmlEntities(match[3]);
+        let cleanUrl = rawUrl;
+        try {
+          const u = new URL(rawUrl, 'https://html.duckduckgo.com');
+          const uddg = u.searchParams.get('uddg');
+          if (uddg) cleanUrl = decodeURIComponent(uddg);
+        } catch {}
+        if (title && snippet) {
+          results.push({
+            title: title.slice(0, 160),
+            snippet: snippet.slice(0, 600),
+            url: cleanUrl,
+            source: 'Web',
+          });
+        }
       }
       return results;
+    } catch {
+      return [];
     } finally {
       clearTimeout(timer);
     }
@@ -5657,8 +5698,19 @@ function webSearchProxy() {
       }
       let results = [];
       try {
-        results = await wikipediaSearch(query);
-        if (!results.length) results = await duckDuckGoSearch(query);
+        const [wikiSettled, ddgSettled] = await Promise.allSettled([
+          wikipediaSearch(query),
+          duckDuckGoSearch(query),
+        ]);
+        const wikiHits = wikiSettled.status === 'fulfilled' ? (wikiSettled.value || []) : [];
+        const ddgHits = ddgSettled.status === 'fulfilled' ? (ddgSettled.value || []) : [];
+        const isSpecificLookup = /(?:villa|mansion|haus|house|estate|anwesen|adresse|address|straße|street|wer|who|wo|where|aktuell|news|anschlag|attack|drone|drohne)/i.test(query);
+        if (isSpecificLookup) {
+          results = [...ddgHits, ...wikiHits];
+        } else {
+          results = [...wikiHits, ...ddgHits];
+        }
+        results = results.slice(0, 5);
       } catch {
         results = [];
       }

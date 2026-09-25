@@ -3009,7 +3009,7 @@ async function webSearch(args = {}) {
       return { ok: false, action: 'web_search', query, error: `Search backend returned ${response.status}` };
     }
     const data = await response.json().catch(() => null);
-    const results = Array.isArray(data?.results) ? data.results.slice(0, 3).map((row) => ({
+    const results = Array.isArray(data?.results) ? data.results.slice(0, 5).map((row) => ({
       title: String(row?.title || '').slice(0, 160),
       snippet: String(row?.snippet || '').slice(0, 600),
       url: String(row?.url || '').slice(0, 300),

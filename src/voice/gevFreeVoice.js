@@ -1701,12 +1701,12 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
    */
   async function chainWebSearchFollowUp(endpoint, brainWho, originalText, searchResult, lang = 'en', opts = {}) {
     const de = lang === 'de';
-    const results = Array.isArray(searchResult?.results) ? searchResult.results.slice(0, 3) : [];
+    const results = Array.isArray(searchResult?.results) ? searchResult.results.slice(0, 5) : [];
     if (!results.length) return null;
     const resultBlock = results
-      .map((r, i) => `${i + 1}. ${r.title} — ${r.snippet} (${r.source || 'web'})`)
+      .map((r, i) => `${i + 1}. [${r.source || 'Web'}] ${r.title} — ${r.snippet}`)
       .join('\n');
-    const message = `The user asked: "${String(originalText || '').slice(0, 300)}"\n\nWeb search results for "${String(searchResult?.query || '').slice(0, 120)}":\n${resultBlock}\n\nNow answer with ONLY the map-tool JSON (same envelope as before) that fulfills the request, or a short direct answer.`;
+    const message = `The user asked: "${String(originalText || '').slice(0, 300)}"\n\nWeb search results for "${String(searchResult?.query || '').slice(0, 120)}":\n${resultBlock}\n\nBased on these findings:\n- If the user wants to fly to, see, or mark the location/building/estate: execute the tool JSON (fly_to_location or annotate_map) with the discovered address or coordinates!\n- If the user asked a question or for research/information about a person, event, or place: provide a comprehensive, direct factual answer in ${de ? 'German' : 'English'} (no JSON).`;
     let data = null;
     try {
       const response = await doFetch(endpoint, {
@@ -1729,6 +1729,20 @@ export function createFreeVoiceController({ runner, ui = null, announce = true, 
     const degenerate = routed?.name ? null : extractDegenerateRouterCall(data?.answer);
     if (degenerate && degenerate.name !== 'web_search' && isCompleteRouterCall(degenerate.name, degenerate.args)) {
       return follow(degenerate.name, degenerate.args, synthRouterSay(degenerate.name, degenerate.args, lang));
+    }
+    // Direct answer synthesis (user asked for facts/research or model gave text response)
+    const rawAns = typeof data?.answer === 'string' ? data.answer.trim() : '';
+    let direct = extractDirectAnswer(rawAns);
+    if (!direct && rawAns && !rawAns.startsWith('{') && !rawAns.startsWith('[')) {
+      direct = rawAns;
+    }
+    const isRefusal = /(?:tut mir leid|kann leider|kann ich leider nicht|keine kartenaktion|keine karten-aktion|keine aktion|nicht möglich|sorry|no map action|cannot)/i.test(direct || '');
+    if (direct && !isRefusal) {
+      state.lastResult = { ok: true, speech: direct, answer: direct };
+      setDetail(direct);
+      if (!opts?.silent) speak(direct, lang);
+      logTurn(brainWho, direct);
+      return state.lastResult;
     }
     // Honest fallback: speak the top hit instead of silence.
     const top = results[0];

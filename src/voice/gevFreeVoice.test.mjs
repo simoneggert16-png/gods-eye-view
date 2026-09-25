@@ -1012,6 +1012,59 @@ test('web_search follow-up without a second call speaks the top hit', async () =
   assert.match(result.speech, /Washington Monument/);
 });
 
+test('web_search follow-up delivers direct German factual answer when model synthesizes text', async () => {
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    if ((body.message || '').includes('Web search results')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          answer: 'Sean "Diddy" Combs besitzt ein bekanntes Anwesen am 200 South Mapleton Drive in Los Angeles.',
+          blocked: false,
+          error: null,
+        }),
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        answer: '{"name": "web_search", "args": {"query": "Sean Diddy Combs villa address Los Angeles"}, "say": "Ich recherchiere Diddys Villa im Web."}',
+        blocked: false,
+        error: null,
+      }),
+    };
+  };
+  const loggedTurns = [];
+  const controller = createFreeVoiceController({
+    announce: false,
+    ui: { detail: { textContent: '' } },
+    fetchImpl,
+    runner: async (name, args) => {
+      if (name === 'get_current_view_state' || name === 'get_entity_context') return { ok: true };
+      if (name === 'web_search') {
+        return {
+          ok: true,
+          action: name,
+          results: [{
+            title: 'Inside Sean Diddy Combs Holmby Hills Mansion',
+            snippet: 'The address is 200 South Mapleton Drive, Los Angeles, CA 90024.',
+            url: 'https://example.com',
+            source: 'Web',
+          }],
+        };
+      }
+      return { ok: true, action: name };
+    },
+    log: { push: (entry) => loggedTurns.push(entry), list: () => loggedTurns },
+  });
+  const result = await controller.handleChatText('wer ist Diddy und wo wohnt er?');
+  assert.equal(result.ok, true);
+  assert.match(result.answer, /200 South Mapleton Drive/);
+  assert.match(result.speech, /200 South Mapleton Drive/);
+});
+
 test('query_financial_market_impact chains follow-up to answer the user question using sitrep data', async () => {
   const posted = [];
   const logged = [];
