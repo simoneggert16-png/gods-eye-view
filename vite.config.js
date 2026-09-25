@@ -1670,7 +1670,11 @@ function celestrakProxy() {
 
   async function fetchUpstream(group) {
     const url = new URL('https://celestrak.org/NORAD/elements/gp.php');
-    url.searchParams.set('GROUP', group);
+    if (/^\d+$/.test(group)) {
+      url.searchParams.set('CATNR', group);
+    } else {
+      url.searchParams.set('GROUP', group);
+    }
     url.searchParams.set('FORMAT', 'tle');
     const res = await fetch(url.toString(), {
       signal: AbortSignal.timeout(20000),

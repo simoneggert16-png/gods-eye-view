@@ -46,6 +46,17 @@ import { isExplicitLayerStateOrigin } from './layerState.js';
  */
 
 const ISS_NORAD = 25544;
+export const SATGUS_NORAD = 62713;
+
+export const FEATURED_SATELLITES = Object.freeze([
+  {
+    name: 'SATGUS',
+    noradId: SATGUS_NORAD,
+    group: 'featured',
+    line1: '1 62713U 25009DJ  26267.74102978  .00005652  00000+0  43206-3 0  9991',
+    line2: '2 62713  97.6889 348.2008 0005213 122.0940 238.0791 15.02318704 92509',
+  },
+]);
 export const ISS_OVERLAY_SOURCE_ID = 'satellites-iss';
 export const ISS_OVERLAY_SOURCE_OPTIONS = Object.freeze({
   cohortLimit: 1,
@@ -78,6 +89,7 @@ const CATALOG_GROUPS = [
   { tag: 'glonass', path: 'glo-ops' },
   { tag: 'galileo', path: 'galileo' },
   { tag: 'geo', path: 'geo' },
+  { tag: 'featured', path: '62713' },
 ];
 
 // Dense-catalog mode (setParams({ catalog: 'dense' })): Starlink shell as
@@ -168,6 +180,12 @@ const POINT_STYLES = {
     outlineColor: POINT_OUTLINE,
     outlineWidth: 0,
   },
+  satgus: {
+    pixelSize: 10,
+    color: Cesium.Color.fromCssColorString('#c084fc'),
+    outlineColor: POINT_OUTLINE,
+    outlineWidth: 1.5,
+  },
 };
 
 /**
@@ -178,6 +196,7 @@ const POINT_STYLES = {
  */
 function _pointStyleFor(noradId, group) {
   if (noradId === ISS_NORAD) return POINT_STYLES.iss;
+  if (noradId === SATGUS_NORAD) return POINT_STYLES.satgus;
   return POINT_STYLES[group] || POINT_STYLES.visual;
 }
 
@@ -250,6 +269,44 @@ let _denseError = null;
 /** Bumped on every bulk catalog mutation; keys the row-legend tally cache. */
 let _catalogRevision = 0;
 let _classTallyCache = { revision: -1, counts: null };
+
+function _seedFeaturedSatellites() {
+  for (const feat of FEATURED_SATELLITES) {
+    if (_catalog.has(feat.noradId)) continue;
+    const satrec = twoline2satrec(feat.line1, feat.line2);
+    if (satrec && satrec.error === 0) {
+      _catalog.set(feat.noradId, {
+        name: feat.name,
+        satrec,
+        group: feat.group,
+      });
+      _catalogRevision++;
+    }
+  }
+}
+
+function _ensureSatellitePoint(noradId) {
+  if (_points.has(noradId)) return _points.get(noradId);
+  const sat = _catalog.get(noradId);
+  if (!sat || !sat.satrec || !_pointCollection) return null;
+  const now = new Date();
+  const pos = propagatePosition(sat.satrec, now);
+  if (!pos) return null;
+  const cartesian = Cesium.Cartesian3.fromDegrees(pos.longitude, pos.latitude, pos.altitude);
+  const style = _pointStyleFor(noradId, sat.group);
+  const point = _pointCollection.add({
+    position: cartesian,
+    pixelSize: style.pixelSize,
+    color: style.color,
+    outlineColor: style.outlineColor,
+    outlineWidth: style.outlineWidth,
+    scaleByDistance: new Cesium.NearFarScalar(1e6, 1.5, 2e7, 0.6),
+    id: noradId,
+  });
+  _points.set(noradId, point);
+  return point;
+}
+
 /** @type {(() => void)|null} Manager callback: "this layer's row controls changed". */
 let _rowControlsListener = null;
 
@@ -1553,6 +1610,7 @@ const satellitesLayer = {
     _denseStatus = 'idle';
     _denseError = null;
     _catalogRevision++;
+    _seedFeaturedSatellites();
 
     // Point primitives for satellite dots
     _pointCollection = new Cesium.PointPrimitiveCollection();
@@ -1692,6 +1750,9 @@ const satellitesLayer = {
       const allEntries = [];
       for (const r of results) {
         for (const e of r.entries) allEntries.push({ ...e, group: r.tag });
+      }
+      for (const feat of FEATURED_SATELLITES) {
+        allEntries.push({ ...feat });
       }
 
       // Deduplicate by NORAD ID — first (most specific) group tag wins
