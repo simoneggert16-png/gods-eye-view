@@ -1659,61 +1659,68 @@ function celestrakProxy() {
     return { at: Date.now(), body };
   }
 
+  function install(middlewares) {
+    middlewares.use('/api/celestrak', async (req, res) => {
+      const group = String(req.url || '').replace(/^\//, '').split('?')[0];
+      if (!/^[a-z0-9-]+$/i.test(group)) {
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
+        res.end('invalid group');
+        return;
+      }
+      const send = (status, body, cacheStatus) => {
+        // Guard against a double-send (e.g. a throw AFTER a response already
+        // went out routing into the catch's send): writeHead after headersSent
+        // throws "Cannot set headers after they are sent".
+        if (res.headersSent) return;
+        res.writeHead(status, { 'Content-Type': 'text/plain', 'x-tle-cache': cacheStatus });
+        res.end(body);
+      };
+      try {
+        const now = Date.now();
+        let entry = mem.get(group);
+        if (!entry) {
+          entry = await readDisk(group);
+          if (entry) mem.set(group, entry);
+        }
+        if (entry && now - entry.at < TLE_TTL_MS) {
+          send(200, entry.body, 'HIT');
+          return;
+        }
+        // Stale or missing → refresh, single-flight per group.
+        if (!inflight.has(group)) {
+          inflight.set(group, fetchUpstream(group)
+            .then(async (fresh) => {
+              mem.set(group, fresh);
+              await writeDisk(group, fresh);
+              return fresh;
+            })
+            .catch((err) => {
+              console.warn(`[celestrak-proxy] ${group} refresh failed (${err?.message || err}) — serving cache if any`);
+              return null;
+            })
+            .finally(() => inflight.delete(group)));
+        }
+        const fresh = await inflight.get(group);
+        if (fresh) {
+          send(200, fresh.body, 'MISS');
+        } else if (entry) {
+          send(200, entry.body, 'STALE-ERROR'); // upstream down — stale beats empty
+        } else {
+          send(502, 'celestrak fetch failed and no cache available', 'NONE');
+        }
+      } catch (err) {
+        send(500, `celestrak proxy error: ${err?.message || err}`, 'ERROR');
+      }
+    });
+  }
+
   return {
     name: 'celestrak-proxy',
     configureServer(server) {
-      server.middlewares.use('/api/celestrak', async (req, res) => {
-        const group = String(req.url || '').replace(/^\//, '').split('?')[0];
-        if (!/^[a-z0-9-]+$/i.test(group)) {
-          res.writeHead(400, { 'Content-Type': 'text/plain' });
-          res.end('invalid group');
-          return;
-        }
-        const send = (status, body, cacheStatus) => {
-          // Guard against a double-send (e.g. a throw AFTER a response already
-          // went out routing into the catch's send): writeHead after headersSent
-          // throws "Cannot set headers after they are sent".
-          if (res.headersSent) return;
-          res.writeHead(status, { 'Content-Type': 'text/plain', 'x-tle-cache': cacheStatus });
-          res.end(body);
-        };
-        try {
-          const now = Date.now();
-          let entry = mem.get(group);
-          if (!entry) {
-            entry = await readDisk(group);
-            if (entry) mem.set(group, entry);
-          }
-          if (entry && now - entry.at < TLE_TTL_MS) {
-            send(200, entry.body, 'HIT');
-            return;
-          }
-          // Stale or missing → refresh, single-flight per group.
-          if (!inflight.has(group)) {
-            inflight.set(group, fetchUpstream(group)
-              .then(async (fresh) => {
-                mem.set(group, fresh);
-                await writeDisk(group, fresh);
-                return fresh;
-              })
-              .catch((err) => {
-                console.warn(`[celestrak-proxy] ${group} refresh failed (${err?.message || err}) — serving cache if any`);
-                return null;
-              })
-              .finally(() => inflight.delete(group)));
-          }
-          const fresh = await inflight.get(group);
-          if (fresh) {
-            send(200, fresh.body, 'MISS');
-          } else if (entry) {
-            send(200, entry.body, 'STALE-ERROR'); // upstream down — stale beats empty
-          } else {
-            send(502, 'celestrak fetch failed and no cache available', 'NONE');
-          }
-        } catch (err) {
-          send(500, `celestrak proxy error: ${err?.message || err}`, 'ERROR');
-        }
-      });
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
     },
   };
 }
@@ -1963,111 +1970,118 @@ function tomtomProxy() {
     return buf;
   }
 
+  function install(middlewares) {
+    middlewares.use('/api/tomtom', async (req, res) => {
+      // Sanitized responses only (proxy/security baseline): no upstream
+      // error details, and never echo the key or the upstream URL.
+      const sendJson = (status, obj, extraHeaders = {}) => {
+        if (res.headersSent) return;
+        res.writeHead(status, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+          ...extraHeaders,
+        });
+        res.end(JSON.stringify(obj));
+      };
+      const sendTile = (buf, cacheStatus) => {
+        if (res.headersSent) return;
+        res.writeHead(200, {
+          'Content-Type': 'application/x-protobuf',
+          'Cache-Control': 'no-store',
+          'x-tomtom-cache': cacheStatus,
+        });
+        res.end(buf);
+      };
+
+      try {
+        await loadBudgetOnce();
+        const urlPath = String(req.url || '').split('?')[0];
+
+        if (urlPath === '/status') {
+          const hasKey = Boolean(process.env.TOMTOM_API_KEY);
+          const b = currentBudget();
+          sendJson(200, { hasKey, dailyCount: b.count, budget: dailyBudgetLimit(), date: b.date });
+          return;
+        }
+
+        const m = urlPath.match(/^\/flow\/(\d+)\/(\d+)\/(\d+)\.pbf$/);
+        if (!m) {
+          sendJson(404, { error: 'not_found' });
+          return;
+        }
+        const z = Number(m[1]);
+        const x = Number(m[2]);
+        const y = Number(m[3]);
+        if (!isValidTomTomTile(z, x, y)) {
+          sendJson(400, { error: 'invalid_tile' });
+          return;
+        }
+        if (!process.env.TOMTOM_API_KEY) {
+          sendJson(503, { error: 'no_key' });
+          return;
+        }
+
+        const key = `${z}/${x}/${y}`;
+        const now = Date.now();
+
+        let entry = mem.get(key);
+        if (!entry) {
+          entry = await readDiskTile(key);
+          if (entry) memSet(key, entry);
+        }
+        // Fresh cache hit — never counts against the budget.
+        if (entry && now - entry.at < TILE_TTL_MS) {
+          sendTile(entry.buf, 'HIT');
+          return;
+        }
+
+        // Budget governor: over the soft cap, last-good data beats a dead layer.
+        if (isTomTomOverBudget(currentBudget(), dailyBudgetLimit())) {
+          if (entry) {
+            sendTile(entry.buf, 'STALE-BUDGET');
+          } else {
+            sendJson(429, { error: 'budget' });
+          }
+          return;
+        }
+
+        // Stale or missing → refresh, single-flight per tile.
+        if (!inflight.has(key)) {
+          inflight.set(key, fetchUpstream(z, x, y)
+            .then(async (buf) => {
+              const fresh = { at: Date.now(), buf };
+              memSet(key, fresh);
+              await writeDiskTile(key, buf);
+              return fresh;
+            })
+            .catch((err) => {
+              console.warn(`[tomtom-proxy] ${key} fetch failed (${err?.message || err}) — serving stale if any`);
+              return null;
+            })
+            .finally(() => inflight.delete(key)));
+        }
+        const fresh = await inflight.get(key);
+        if (fresh) {
+          sendTile(fresh.buf, 'MISS');
+        } else if (entry) {
+          sendTile(entry.buf, 'STALE-ERROR'); // upstream down — stale beats empty
+        } else {
+          sendJson(502, { error: 'upstream' });
+        }
+      } catch (err) {
+        console.warn('[tomtom-proxy] error:', err?.message || err);
+        sendJson(500, { error: 'proxy' });
+      }
+    });
+  }
+
   return {
     name: 'tomtom-proxy',
     configureServer(server) {
-      server.middlewares.use('/api/tomtom', async (req, res) => {
-        // Sanitized responses only (proxy/security baseline): no upstream
-        // error details, and never echo the key or the upstream URL.
-        const sendJson = (status, obj, extraHeaders = {}) => {
-          if (res.headersSent) return;
-          res.writeHead(status, {
-            'Content-Type': 'application/json',
-            'Cache-Control': 'no-store',
-            ...extraHeaders,
-          });
-          res.end(JSON.stringify(obj));
-        };
-        const sendTile = (buf, cacheStatus) => {
-          if (res.headersSent) return;
-          res.writeHead(200, {
-            'Content-Type': 'application/x-protobuf',
-            'Cache-Control': 'no-store',
-            'x-tomtom-cache': cacheStatus,
-          });
-          res.end(buf);
-        };
-
-        try {
-          await loadBudgetOnce();
-          const urlPath = String(req.url || '').split('?')[0];
-
-          if (urlPath === '/status') {
-            const hasKey = Boolean(process.env.TOMTOM_API_KEY);
-            const b = currentBudget();
-            sendJson(200, { hasKey, dailyCount: b.count, budget: dailyBudgetLimit(), date: b.date });
-            return;
-          }
-
-          const m = urlPath.match(/^\/flow\/(\d+)\/(\d+)\/(\d+)\.pbf$/);
-          if (!m) {
-            sendJson(404, { error: 'not_found' });
-            return;
-          }
-          const z = Number(m[1]);
-          const x = Number(m[2]);
-          const y = Number(m[3]);
-          if (!isValidTomTomTile(z, x, y)) {
-            sendJson(400, { error: 'invalid_tile' });
-            return;
-          }
-          if (!process.env.TOMTOM_API_KEY) {
-            sendJson(503, { error: 'no_key' });
-            return;
-          }
-
-          const key = `${z}/${x}/${y}`;
-          const now = Date.now();
-
-          let entry = mem.get(key);
-          if (!entry) {
-            entry = await readDiskTile(key);
-            if (entry) memSet(key, entry);
-          }
-          // Fresh cache hit — never counts against the budget.
-          if (entry && now - entry.at < TILE_TTL_MS) {
-            sendTile(entry.buf, 'HIT');
-            return;
-          }
-
-          // Budget governor: over the soft cap, last-good data beats a dead layer.
-          if (isTomTomOverBudget(currentBudget(), dailyBudgetLimit())) {
-            if (entry) {
-              sendTile(entry.buf, 'STALE-BUDGET');
-            } else {
-              sendJson(429, { error: 'budget' });
-            }
-            return;
-          }
-
-          // Stale or missing → refresh, single-flight per tile.
-          if (!inflight.has(key)) {
-            inflight.set(key, fetchUpstream(z, x, y)
-              .then(async (buf) => {
-                const fresh = { at: Date.now(), buf };
-                memSet(key, fresh);
-                await writeDiskTile(key, buf);
-                return fresh;
-              })
-              .catch((err) => {
-                console.warn(`[tomtom-proxy] ${key} fetch failed (${err?.message || err}) — serving stale if any`);
-                return null;
-              })
-              .finally(() => inflight.delete(key)));
-          }
-          const fresh = await inflight.get(key);
-          if (fresh) {
-            sendTile(fresh.buf, 'MISS');
-          } else if (entry) {
-            sendTile(entry.buf, 'STALE-ERROR'); // upstream down — stale beats empty
-          } else {
-            sendJson(502, { error: 'upstream' });
-          }
-        } catch (err) {
-          console.warn('[tomtom-proxy] error:', err?.message || err);
-          sendJson(500, { error: 'proxy' });
-        }
-      });
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
     },
   };
 }
@@ -2220,77 +2234,84 @@ function firmsProxy() {
     return statusInflight;
   }
 
+  function install(middlewares) {
+    middlewares.use('/api/firms', async (req, res) => {
+      const sendJson = (status, obj) => {
+        if (res.headersSent) return;
+        res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(obj));
+      };
+      try {
+        const subPath = String(req.url || '').split('?')[0];
+        const key = mapKey();
+        await readDiskOnce();
+
+        if (subPath === '/status') {
+          if (!key) {
+            sendJson(200, { hasKey: false, lastFetch: null, count: null, stale: false, ttlMs: TTL_MS, transactions: null });
+            return;
+          }
+          const transactions = await getTransactions(key);
+          sendJson(200, {
+            hasKey: true,
+            lastFetch: mem ? mem.at : null,
+            count: mem ? mem.fires.length : null,
+            stale: mem ? Date.now() - mem.at >= TTL_MS : false,
+            ttlMs: TTL_MS,
+            transactions,
+          });
+          return;
+        }
+
+        if (!key) {
+          sendJson(503, { error: 'no_key' });
+          return;
+        }
+
+        const entry = mem;
+        if (entry && Date.now() - entry.at < TTL_MS) {
+          sendJson(200, buildPayload(entry, false));
+          return;
+        }
+        // Stale or missing → refresh, single-flight (concurrent requests
+        // share one upstream pass). Capture the promise locally BEFORE
+        // awaiting: the .finally() nulls `inflight` the moment it settles.
+        if (!inflight) {
+          inflight = refreshUpstream(key)
+            .then(async (fresh) => {
+              mem = fresh;
+              await writeDisk(fresh);
+              return fresh;
+            })
+            .catch((err) => {
+              console.warn(`[firms-proxy] refresh failed (${err?.message || err}) — serving cache if any`);
+              return null;
+            })
+            .finally(() => { inflight = null; });
+        }
+        const pending = inflight;
+        const fresh = await pending;
+        if (fresh) {
+          sendJson(200, buildPayload(fresh, false));
+        } else if (entry) {
+          sendJson(200, buildPayload(entry, true)); // upstream down — stale beats empty
+        } else {
+          sendJson(502, { error: 'firms fetch failed and no cache available' });
+        }
+      } catch (err) {
+        console.warn('[firms-proxy] error:', err?.message || err);
+        sendJson(500, { error: 'firms proxy error' });
+      }
+    });
+  }
+
   return {
     name: 'firms-proxy',
     configureServer(server) {
-      server.middlewares.use('/api/firms', async (req, res) => {
-        const sendJson = (status, obj) => {
-          if (res.headersSent) return;
-          res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-          res.end(JSON.stringify(obj));
-        };
-        try {
-          const subPath = String(req.url || '').split('?')[0];
-          const key = mapKey();
-          await readDiskOnce();
-
-          if (subPath === '/status') {
-            if (!key) {
-              sendJson(200, { hasKey: false, lastFetch: null, count: null, stale: false, ttlMs: TTL_MS, transactions: null });
-              return;
-            }
-            const transactions = await getTransactions(key);
-            sendJson(200, {
-              hasKey: true,
-              lastFetch: mem ? mem.at : null,
-              count: mem ? mem.fires.length : null,
-              stale: mem ? Date.now() - mem.at >= TTL_MS : false,
-              ttlMs: TTL_MS,
-              transactions,
-            });
-            return;
-          }
-
-          if (!key) {
-            sendJson(503, { error: 'no_key' });
-            return;
-          }
-
-          const entry = mem;
-          if (entry && Date.now() - entry.at < TTL_MS) {
-            sendJson(200, buildPayload(entry, false));
-            return;
-          }
-          // Stale or missing → refresh, single-flight (concurrent requests
-          // share one upstream pass). Capture the promise locally BEFORE
-          // awaiting: the .finally() nulls `inflight` the moment it settles.
-          if (!inflight) {
-            inflight = refreshUpstream(key)
-              .then(async (fresh) => {
-                mem = fresh;
-                await writeDisk(fresh);
-                return fresh;
-              })
-              .catch((err) => {
-                console.warn(`[firms-proxy] refresh failed (${err?.message || err}) — serving cache if any`);
-                return null;
-              })
-              .finally(() => { inflight = null; });
-          }
-          const pending = inflight;
-          const fresh = await pending;
-          if (fresh) {
-            sendJson(200, buildPayload(fresh, false));
-          } else if (entry) {
-            sendJson(200, buildPayload(entry, true)); // upstream down — stale beats empty
-          } else {
-            sendJson(502, { error: 'firms fetch failed and no cache available' });
-          }
-        } catch (err) {
-          console.warn('[firms-proxy] error:', err?.message || err);
-          sendJson(500, { error: 'firms proxy error' });
-        }
-      });
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
     },
   };
 }
@@ -2401,47 +2422,54 @@ function terrainHeightsProxy() {
     return inflight.get(key);
   }
 
+  function install(middlewares) {
+    middlewares.use('/api/terrain/heights', async (req, res) => {
+      const send = (status, bodyObj) => {
+        if (res.headersSent) return;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(bodyObj));
+      };
+      try {
+        await loadDiskOnce();
+        const parsedUrl = new URL(req.url || '', 'http://internal');
+        const rawPoints = parsedUrl.searchParams.get('points');
+        const points = parseTerrainPoints(rawPoints);
+        if (!points) {
+          send(400, { error: 'invalid points parameter — expected "lon,lat;lon,lat;…" with finite numbers' });
+          return;
+        }
+        if (points.length > MAX_POINTS) {
+          send(500, { error: `too many points (${points.length}); max ${MAX_POINTS} per request` });
+          return;
+        }
+
+        const outcome = await resolveTerrainHeightRequest({
+          points,
+          cache: mem,
+          fetchMissing: fetchMissingSingleFlight,
+          ttlMs: TTL_MS,
+        });
+        if (outcome.cacheChanged) diskDirty = true;
+        if (outcome.upstreamError) {
+          console.warn(
+            `[terrain-heights-proxy] refresh incomplete (${outcome.upstreamError?.message || outcome.upstreamError})`
+            + ' — serving stale points when available'
+          );
+        }
+        send(outcome.status, outcome.body);
+      } catch (err) {
+        send(500, { error: `terrain heights proxy error: ${err?.message || err}` });
+      }
+    });
+  }
+
   return {
     name: 'terrain-heights-proxy',
     configureServer(server) {
-      server.middlewares.use('/api/terrain/heights', async (req, res) => {
-        const send = (status, bodyObj) => {
-          if (res.headersSent) return;
-          res.writeHead(status, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify(bodyObj));
-        };
-        try {
-          await loadDiskOnce();
-          const parsedUrl = new URL(req.url || '', 'http://internal');
-          const rawPoints = parsedUrl.searchParams.get('points');
-          const points = parseTerrainPoints(rawPoints);
-          if (!points) {
-            send(400, { error: 'invalid points parameter — expected "lon,lat;lon,lat;…" with finite numbers' });
-            return;
-          }
-          if (points.length > MAX_POINTS) {
-            send(500, { error: `too many points (${points.length}); max ${MAX_POINTS} per request` });
-            return;
-          }
-
-          const outcome = await resolveTerrainHeightRequest({
-            points,
-            cache: mem,
-            fetchMissing: fetchMissingSingleFlight,
-            ttlMs: TTL_MS,
-          });
-          if (outcome.cacheChanged) diskDirty = true;
-          if (outcome.upstreamError) {
-            console.warn(
-              `[terrain-heights-proxy] refresh incomplete (${outcome.upstreamError?.message || outcome.upstreamError})`
-              + ' — serving stale points when available'
-            );
-          }
-          send(outcome.status, outcome.body);
-        } catch (err) {
-          send(500, { error: `terrain heights proxy error: ${err?.message || err}` });
-        }
-      });
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
     },
   };
 }
@@ -2535,34 +2563,41 @@ function adsbdbProxy() {
     return inflight.get(ik);
   }
 
+  function install(middlewares) {
+    middlewares.use('/api/adsbdb', async (req, res) => {
+      await loadOnce();
+      const send = (status, obj) => {
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(obj));
+      };
+      try {
+        const [, kind, rawKey] = String(req.url || '').split('?')[0].split('/');
+        if (kind === 'route') {
+          const cs = String(rawKey || '').toUpperCase();
+          if (!/^[A-Z0-9]{2,8}$/.test(cs)) return send(400, { error: 'invalid callsign' });
+          const data = await lookup('route', cs);
+          return send(200, data ? { found: true, ...data } : { found: false });
+        }
+        if (kind === 'type') {
+          const hex = String(rawKey || '').toLowerCase();
+          if (!/^[0-9a-f]{6}$/.test(hex)) return send(400, { error: 'invalid hex' });
+          const data = await lookup('aircraft', hex);
+          return send(200, data ? { found: true, ...data } : { found: false });
+        }
+        return send(404, { error: 'unknown endpoint' });
+      } catch (err) {
+        return send(500, { error: String(err?.message || err) });
+      }
+    });
+  }
+
   return {
     name: 'adsbdb-proxy',
     configureServer(server) {
-      server.middlewares.use('/api/adsbdb', async (req, res) => {
-        await loadOnce();
-        const send = (status, obj) => {
-          res.writeHead(status, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify(obj));
-        };
-        try {
-          const [, kind, rawKey] = String(req.url || '').split('?')[0].split('/');
-          if (kind === 'route') {
-            const cs = String(rawKey || '').toUpperCase();
-            if (!/^[A-Z0-9]{2,8}$/.test(cs)) return send(400, { error: 'invalid callsign' });
-            const data = await lookup('route', cs);
-            return send(200, data ? { found: true, ...data } : { found: false });
-          }
-          if (kind === 'type') {
-            const hex = String(rawKey || '').toLowerCase();
-            if (!/^[0-9a-f]{6}$/.test(hex)) return send(400, { error: 'invalid hex' });
-            const data = await lookup('aircraft', hex);
-            return send(200, data ? { found: true, ...data } : { found: false });
-          }
-          return send(404, { error: 'unknown endpoint' });
-        } catch (err) {
-          return send(500, { error: String(err?.message || err) });
-        }
-      });
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
     },
   };
 }
@@ -2739,10 +2774,8 @@ export async function fetchOverpassPayload(body, maxResponseBytes = OVERPASS_MAX
  * @returns {import('vite').Plugin}
  */
 function overpassProxy() {
-  return {
-    name: 'overpass-proxy',
-    configureServer(server) {
-      server.middlewares.use('/api/overpass', async (req, res) => {
+  function install(middlewares) {
+    middlewares.use('/api/overpass', async (req, res) => {
         // Hoisted out of the try so the catch's serve-stale lookup can see it
         // (a body-read failure would otherwise hit an out-of-scope reference).
         let cacheKey = null;
@@ -2872,7 +2905,7 @@ function overpassProxy() {
 
       // Real OSM routing via the public FOSSGIS OSRM servers (foot/car/bike).
       // GET /api/route?profile=foot|car|bike&coords=lon,lat;lon,lat[;...]
-      server.middlewares.use('/api/route', async (req, res) => {
+      middlewares.use('/api/route', async (req, res) => {
         const fail = (msg) => {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: false, error: msg }));
@@ -2961,6 +2994,15 @@ function overpassProxy() {
           fail('route proxy error');
         }
       });
+  }
+
+  return {
+    name: 'overpass-proxy',
+    configureServer(server) {
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
     },
   };
 }
@@ -3077,10 +3119,8 @@ function openSkySourceIsStale(sourceEpochMs, now = Date.now()) {
  * @returns {import('vite').Plugin}
  */
 function openSkyProxy() {
-  return {
-    name: 'opensky-proxy',
-    configureServer(server) {
-      server.middlewares.use('/api/opensky', async (req, res) => {
+  function install(middlewares) {
+    middlewares.use('/api/opensky', async (req, res) => {
         try {
           const requestedMode = normalizeOpenSkyAuthMode(process.env.OPENSKY_AUTH_MODE);
           const now = Date.now();
@@ -3356,6 +3396,15 @@ function openSkyProxy() {
           res.end(JSON.stringify({ error: 'OpenSky proxy error' }));
         }
       });
+  }
+
+  return {
+    name: 'opensky-proxy',
+    configureServer(server) {
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
     },
   };
 }
@@ -3412,10 +3461,8 @@ function gbfsCacheControl(pathname) {
  * @returns {import('vite').Plugin}
  */
 function gbfsProxy() {
-  return {
-    name: 'gbfs-proxy',
-    configureServer(server) {
-      server.middlewares.use('/api/gbfs', async (req, res) => {
+  function install(middlewares) {
+    middlewares.use('/api/gbfs', async (req, res) => {
         try {
           if (req.method !== 'GET') {
             res.writeHead(405, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -3516,6 +3563,15 @@ function gbfsProxy() {
           res.end(JSON.stringify({ error: 'GBFS proxy error' }));
         }
       });
+  }
+
+  return {
+    name: 'gbfs-proxy',
+    configureServer(server) {
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
     },
   };
 }
@@ -4836,10 +4892,8 @@ function cctvProxy() {
     }
   };
 
-  return {
-    name: 'cctv-proxy',
-    configureServer(server) {
-      server.middlewares.use('/api/cctv', async (req, res) => {
+  function install(middlewares) {
+    middlewares.use('/api/cctv', async (req, res) => {
         try {
           const sources = await getCctvSources();
           const sourceById = new Map(sources.map((source) => [source.id, source]));
@@ -5183,6 +5237,15 @@ function cctvProxy() {
           res.end(JSON.stringify({ error: 'CCTV proxy error' }));
         }
       });
+  }
+
+  return {
+    name: 'cctv-proxy',
+    configureServer(server) {
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
     },
   };
 }
@@ -5202,38 +5265,45 @@ function adsbLolProxy() {
   let _cacheAt = 0;
   /** Response cache TTL (ms). */
   const CACHE_MS = 12000;
+  function install(middlewares) {
+    middlewares.use('/api/adsblol/mil', async (req, res) => {
+      try {
+        const now = Date.now();
+        if (_cache && now - _cacheAt < CACHE_MS) {
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-ADS-B-Cache': 'HIT' });
+          res.end(_cache);
+          return;
+        }
+        const upstream = await fetch('https://api.adsb.lol/v2/mil', {
+          headers: { 'User-Agent': 'gods-eye-view-adsblol-proxy/1.0' },
+        });
+        const body = await upstream.text();
+        if (upstream.ok) {
+          _cache = body;
+          _cacheAt = now;
+        }
+        res.writeHead(upstream.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-ADS-B-Cache': 'MISS' });
+        res.end(body);
+      } catch (e) {
+        console.error('[adsb.lol Proxy]', e.message);
+        if (_cache) {
+          res.writeHead(200, { 'Content-Type': 'application/json', 'X-ADS-B-Cache': 'STALE' });
+          res.end(_cache);
+          return;
+        }
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'ADS-B proxy error' }));
+      }
+    });
+  }
+
   return {
     name: 'adsblol-proxy',
     configureServer(server) {
-      server.middlewares.use('/api/adsblol/mil', async (req, res) => {
-        try {
-          const now = Date.now();
-          if (_cache && now - _cacheAt < CACHE_MS) {
-            res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-ADS-B-Cache': 'HIT' });
-            res.end(_cache);
-            return;
-          }
-          const upstream = await fetch('https://api.adsb.lol/v2/mil', {
-            headers: { 'User-Agent': 'gods-eye-view-adsblol-proxy/1.0' },
-          });
-          const body = await upstream.text();
-          if (upstream.ok) {
-            _cache = body;
-            _cacheAt = now;
-          }
-          res.writeHead(upstream.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-ADS-B-Cache': 'MISS' });
-          res.end(body);
-        } catch (e) {
-          console.error('[adsb.lol Proxy]', e.message);
-          if (_cache) {
-            res.writeHead(200, { 'Content-Type': 'application/json', 'X-ADS-B-Cache': 'STALE' });
-            res.end(_cache);
-            return;
-          }
-          res.writeHead(502, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'ADS-B proxy error' }));
-        }
-      });
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
     },
   };
 }
