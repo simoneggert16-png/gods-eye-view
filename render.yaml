@@ -20,3 +20,9 @@
         sync: false
       - key: CESIUM_ION_TOKEN
         sync: false
+      - key: OPENSKY_AUTH_MODE
+        value: oauth
+      - key: OPENSKY_CLIENT_ID
+        sync: false
+      - key: OPENSKY_CLIENT_SECRET
+        sync: false
