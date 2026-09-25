@@ -6,13 +6,17 @@ import { fileURLToPath } from 'node:url';
 
 const SRC_ROOT = fileURLToPath(new URL('.', import.meta.url));
 
-/** Every browser-built module under src/ — the test files are Node-only. */
+const SERVER_ONLY_MODULES = new Set(['pinGateServer.js']);
+
+/** Every browser-built module under src/ — the test files and server middleware are Node-only. */
 function browserModules(directory = SRC_ROOT) {
   const files = [];
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const absolute = path.join(directory, entry.name);
     if (entry.isDirectory()) files.push(...browserModules(absolute));
-    else if (entry.isFile() && entry.name.endsWith('.js')) files.push(absolute);
+    else if (entry.isFile() && entry.name.endsWith('.js') && !SERVER_ONLY_MODULES.has(entry.name)) {
+      files.push(absolute);
+    }
   }
   return files.sort();
 }

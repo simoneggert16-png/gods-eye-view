@@ -1641,3 +1641,42 @@ test('a vessel analyst record carries the MMSI the tracker keys on', () => {
   assert.equal(nameless.id, '366999124');
   assert.equal(nameless.mmsi, '366999124');
 });
+
+test('a fallback snapshot reconciles vessels and sets fallback feed stats honestly', () => {
+  const clock = makeFakeAisRuntime(1000);
+  _setAisRuntimeForTest(clock.runtime);
+  _setVesselOverlayHostForTest({
+    setEntries() {},
+    setVisible() {},
+    clearSource() {},
+  });
+  _setVesselStateForTest({
+    viewer: {},
+    records: [],
+    billboardCollection: {
+      add: () => ({ position: null, show: false, color: null }),
+      remove: () => {},
+    },
+  });
+  try {
+    _beginAisSessionForTest();
+    _applyAisFeedSnapshotForTest({}, {
+      status: 'fallback',
+      fallback: true,
+      source: 'Global Shipping Fleet',
+      rows: [
+        { mmsi: '219018471', name: 'EVER GIVEN', lat: 51.15, lon: 1.45, speed: 16.8, type: 'Cargo' },
+      ],
+    });
+    const feed = _getVesselFeedStateForTest();
+    const stats = aisLiveVesselsLayer.getStats();
+    assert.equal(stats.status, 'fallback');
+    assert.equal(feed.error, null);
+    assert.equal(stats.fallback, true);
+    assert.equal(stats.source, 'Global Shipping Fleet');
+    assert.equal(feed.count, 1);
+  } finally {
+    _setVesselStateForTest({ enabled: false, billboardCollection: null });
+    _setAisRuntimeForTest();
+  }
+});

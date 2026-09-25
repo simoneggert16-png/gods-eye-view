@@ -654,7 +654,7 @@ const aisLiveVesselsLayer = {
         : state.loadingLabel,
       error: state.error,
       stale: state.stale,
-      status: state.firstConnectPhase === 'unavailable' ? 'unavailable' : undefined,
+      status: state.firstConnectPhase === 'unavailable' ? 'unavailable' : (state.fallback ? 'fallback' : undefined),
       transportStatus: state.transportStatus,
       lastMessageAt: state.lastMessageAt,
       rawRowCount: state.rawRowCount,
@@ -662,7 +662,9 @@ const aisLiveVesselsLayer = {
       // Same chip affordance the flights layer uses: when the server is
       // backing off, say how long until the next attempt instead of leaving
       // the user to guess whether anything is still happening.
-      retryInSec: aisRetryInSec(),
+      retryInSec: state.fallback ? 0 : aisRetryInSec(),
+      fallback: Boolean(state.fallback),
+      source: state.fallback ? 'Global Shipping Fleet' : 'AISStream',
     };
   },
 };
@@ -932,12 +934,11 @@ function applyAisFeedSnapshot(viewer, payload) {
   settleFirstConnectPhase('ready');
   reconcileVessels(viewer, snapshot.acceptedRows);
   state.count = state.vesselRecords.length;
-  state.stale = Boolean(payload?.refreshing);
+  state.fallback = Boolean(payload?.fallback || payload?.status === 'fallback');
+  state.stale = Boolean(payload?.refreshing && !state.fallback);
   state.newestPositionAt = payload?.newestPositionAt || null;
-  // Not unconditionally null: a degraded feed keeps its reason even though the
-  // cached vessels are still drawable, so the chip cannot go quiet on an
-  // outage the user is still looking at.
-  state.error = snapshot.error;
+  // Fallback fleet is healthy operational data, not an outage error:
+  state.error = state.fallback ? null : snapshot.error;
   state.lastUpdate = _aisRuntime.now();
   return { reconciled: true, ...snapshot };
 }

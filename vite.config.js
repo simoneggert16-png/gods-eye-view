@@ -58,6 +58,7 @@ import {
 import { normalizeAdsbLolPointResponse } from './src/data/adsbLolFallback.js';
 import { findWorldLandmark, worldLandmarkAliasDict } from './src/voice/worldLandmarks.js';
 import { createAisStreamAdapter, isRecognizedAisEnvelope } from './src/data/aisStreamAdapter.js';
+import { getAisFallbackRows } from './src/data/aisFallbackSeed.js';
 import { parseSilenceTimeoutEnv } from './src/data/aisWatchdog.js';
 import { keylessHudSummaryResponse } from './src/hudSummaryResponse.js';
 import { parseEnv as parseDotenvText } from 'node:util';
@@ -249,15 +250,40 @@ const OPENSKY_SOURCE_STALE_MS = 120_000;
 // ---------------------------------------------------------------------------
 // Overpass API proxy constants and cache state
 // ---------------------------------------------------------------------------
-/** Ordered list of Overpass API mirrors; tried sequentially on failure/rate-limit. */
+/** Swiss-regional Overpass mirror (fastest for Switzerland, but has no data outside CH). */
+export const OVERPASS_SWISS_UPSTREAM = 'https://overpass.osm.ch/api/interpreter';
+/** Ordered list of full-planet Overpass API mirrors; tried sequentially on failure/rate-limit. */
 export const OVERPASS_UPSTREAMS = [
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
-  'https://overpass.osm.ch/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
   'https://overpass-api.de/api/interpreter',
   'https://lz4.overpass-api.de/api/interpreter',
   'https://overpass.private.coffee/api/interpreter',
 ];
+
+/**
+ * Detect whether an Overpass query targets coordinates strictly within Switzerland.
+ * Used to prioritize or limit the regional overpass.osm.ch mirror so non-Swiss
+ * queries never receive empty `{ elements: [] }` results.
+ * @param {string} body - URL-encoded or raw Overpass QL query body.
+ * @returns {boolean}
+ */
+export function isSwissBounds(body) {
+  if (!body || typeof body !== 'string') return false;
+  let decoded = body;
+  try { decoded = decodeURIComponent(body); } catch { /* ignore */ }
+  const bbox = decoded.match(/\((-?\d+\.?\d*),\s*(-?\d+\.?\d*),\s*(-?\d+\.?\d*),\s*(-?\d+\.?\d*)\)/);
+  if (bbox) {
+    const s = Number(bbox[1]), w = Number(bbox[2]), n = Number(bbox[3]), e = Number(bbox[4]);
+    return s >= 45.8 && n <= 47.9 && w >= 5.9 && e <= 10.6;
+  }
+  const around = decoded.match(/around:\d+,\s*(-?\d+\.?\d*),\s*(-?\d+\.?\d*)/);
+  if (around) {
+    const lat = Number(around[1]), lon = Number(around[2]);
+    return lat >= 45.8 && lat <= 47.9 && lon >= 5.9 && lon <= 10.6;
+  }
+  return false;
+}
 /**
  * TTL for FRESH cached Overpass responses (ms). Road geometry is static for
  * months — the original 45 s TTL forced a public-mirror round-trip on nearly
@@ -280,7 +306,7 @@ const OVERPASS_BOUNDARY_DISK_TTL_MS = 30 * 86_400_000;
 /** Disk-cache directory for Overpass responses. */
 const OVERPASS_DISK_DIR = path.join(process.cwd(), '.gev-cache', 'overpass');
 /** Per-upstream fetch timeout (ms). */
-const OVERPASS_TIMEOUT_MS = 10000;
+const OVERPASS_TIMEOUT_MS = 15000;
 /** Max entries in the Overpass response cache (LRU-like, oldest evicted first). */
 const OVERPASS_CACHE_MAX_ENTRIES = 120;
 /** @type {Map<string,{status:number,body:string,contentType:string,endpoint:string,cachedAt:number}>} */
@@ -2684,16 +2710,21 @@ export function overpassPayloadIsData(payload) {
  * @returns {Promise<{status:number,body:string,contentType:string,endpoint:string,rateLimited:boolean}>}
  */
 export async function fetchOverpassPayload(body, maxResponseBytes = OVERPASS_MAX_RESPONSE_BYTES, {
-  endpoints = OVERPASS_UPSTREAMS,
+  endpoints,
   fetchImpl = fetch,
   readBody = readResponseTextCapped,
   simplify = simplifyOverpassPayloadBody,
 } = {}) {
+  const candidateEndpoints = endpoints || (
+    isSwissBounds(body)
+      ? [OVERPASS_SWISS_UPSTREAM, ...OVERPASS_UPSTREAMS]
+      : OVERPASS_UPSTREAMS
+  );
   let lastError = null;
   let lastRateLimitPayload = null;
   let lastRefusalPayload = null;
 
-  for (const endpoint of endpoints) {
+  for (const endpoint of candidateEndpoints) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), OVERPASS_TIMEOUT_MS);
 
@@ -2730,6 +2761,14 @@ export async function fetchOverpassPayload(body, maxResponseBytes = OVERPASS_MAX
       // failure — skip to the next mirror rather than returning or caching it.
       if (runtimeError) {
         lastError = new Error(`Overpass runtime error (${endpoint})`);
+        continue;
+      }
+
+      // If a regional mirror (like osm.ch) returns zero elements for a road network query,
+      // do not accept it as a definitive answer if other full-planet mirrors remain.
+      const isRoadQuery = typeof body === 'string' && (body.includes('highway') || body.includes('way%5B%22highway'));
+      const hasElements = /"elements"\s*:\s*\[\s*\{/.test(responseBody);
+      if (isRoadQuery && !hasElements && endpoint === OVERPASS_SWISS_UPSTREAM && candidateEndpoints.length > 1) {
         continue;
       }
       // Anything but 2xx is this mirror declining, not an answer. Only 5xx used
@@ -5850,16 +5889,25 @@ function aisLiveProxy() {
 
         const feed = aisStreamStatusSnapshot();
 
-        res.statusCode = process.env.AISSTREAM_API_KEY ? 200 : 503;
+        // Graceful maritime fallback: when upstream is not delivering (key missing, 429 rate limit, or quiet),
+        // serve the curated global maritime fleet so the layer is never dead or stuck on unavailable.
+        const isUpstreamHealthy = Boolean(process.env.AISSTREAM_API_KEY) && feed.status === 'live' && rows.length > 0;
+        const useFallback = !isUpstreamHealthy && rows.length === 0;
+        const effectiveRows = useFallback ? getAisFallbackRows(maxRows) : rows;
+        const effectiveSource = useFallback ? 'Global Shipping Fleet' : 'AISStream';
+        const effectiveStatus = useFallback ? 'fallback' : feed.status;
+
+        res.statusCode = 200;
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
         res.setHeader('Cache-Control', 'no-store');
         res.end(JSON.stringify({
-          rows,
-          source: 'AISStream',
-          status: feed.status,
-          error: feed.error,
-          refreshing: feed.status !== 'live',
-          newestPositionAt: newestAisPositionAt(rows),
+          rows: effectiveRows,
+          source: effectiveSource,
+          status: effectiveStatus,
+          fallback: useFallback,
+          error: useFallback ? null : feed.error,
+          refreshing: !useFallback && feed.status !== 'live',
+          newestPositionAt: useFallback ? Date.now() : newestAisPositionAt(rows),
           lastMessageAt: feed.lastMessageAt,
           // Honest-failure metadata: how long the feed has been quiet, which
           // recovery attempt we are on, and when the next one lands.

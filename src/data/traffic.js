@@ -1182,9 +1182,12 @@ function onCameraChanged() {
   // viewport hits the overlap/center-shift skip in step 3 and the dots
   // (cleared here) never reload (H5). Clearing the gate forces a fresh fetch.
   if (alt > ACTIVATION_ALTITUDE) {
+    cancelActiveFetch();
     clearDots();
     _lastBounds = null;
     _lastViewCenter = null;
+    _fetching = false;
+    _flowPending = 0;
     return;
   }
 
@@ -2522,10 +2525,10 @@ const trafficLayer = {
    *   tilesFetched:number}}
    */
   getStats() {
-    // Outstanding flow work counts as loading: the paint race can leave a
-    // TomTom request in flight after the roads have settled, and the shared
-    // loading batch has to stay open long enough to announce its failure.
-    const loading = _fetching || _flowPending > 0;
+    const alt = _viewer ? getCameraAltitude() : 0;
+    const zoomedOut = Boolean(_viewer && Number.isFinite(alt) && alt > ACTIVATION_ALTITUDE);
+    // Outstanding flow work counts as loading only below activation altitude:
+    const loading = !zoomedOut && (_fetching || _flowPending > 0);
     const feed = trafficFeedPresentation({
       liveMode: _liveMode,
       fetching: loading,
@@ -2539,6 +2542,7 @@ const trafficLayer = {
       loading,
       mode: feed.mode,
       error: feed.error,
+      status: (zoomedOut && _count === 0) ? 'zoom-in' : undefined,
       flowCoveragePct: _flowCoveragePct,
       tilesFetched: getFlowSessionStats().tilesFetched,
       ...(TRAFFIC_TIMING_ENABLED ? { trafficTiming: getTrafficTimingDiagnostics() } : {}),
@@ -2554,12 +2558,9 @@ const trafficLayer = {
       styleProfile: _presetDots === 'on' ? trafficStyleProfile(_stylePreset) : 'normal',
       // Sync-chip text: shown while busy, and flashed on its own for 1.5 s
       // after each completed load (ui.js _updateTrafficSyncChip semantics).
-      // The settled flash carries NO progress number beside it — this label's
-      // coverage figure is the chip's only percentage — so a label that ends
-      // in one had better be the honest one. This is also where LIVE vs
-      // SIMULATED mode is surfaced, and it must never imply a live feed the
-      // layer does not have.
-      loadingLabel: feed.loadingLabel,
+      loadingLabel: (zoomedOut && _count === 0)
+        ? 'Zoom in (<8 km) for street traffic'
+        : feed.loadingLabel,
     };
   },
 };
