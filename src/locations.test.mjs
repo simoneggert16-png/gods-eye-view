@@ -21,6 +21,7 @@ import {
   REGION_SWATH_SPAN_KM,
   GLOBE_VIEW,
   searchAndFlyTo,
+  resolveGroundElevation,
 } from './locations.js';
 
 function stubViewer() {
@@ -95,6 +96,9 @@ test('parks / lakes / campuses frame as area-overview, not precise-place', () =>
   assert.equal(geocodeNavigationMode(['natural_feature', 'establishment']), 'area-overview');
   assert.equal(geocodeNavigationMode(['university', 'point_of_interest']), 'area-overview');
   assert.equal(geocodeNavigationMode(['airport']), 'area-overview');
+  assert.equal(geocodeNavigationMode(['hospital', 'establishment']), 'area-overview');
+  assert.equal(geocodeNavigationMode(['clinic']), 'area-overview');
+  assert.equal(geocodeNavigationMode(['school']), 'area-overview');
 });
 
 test('streets frame as street-corridor (rootcause doc §3 — Sixth Street)', () => {
@@ -751,4 +755,18 @@ test('world landmark variants feed the geocode retry chain', async () => {
   assert.ok(placeQueryVariants('Eiffelturm').includes('Eiffel Tower, Paris'));
   assert.ok(placeQueryVariants('Freiheitsstatue').includes('Statue of Liberty, New York'));
   assert.ok(placeQueryVariants('Schwarzwald').includes('Black Forest (Schwarzwald)'));
+});
+
+test('resolveGroundElevation queries elevation and returns elevation number', async () => {
+  const priorFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => ({ elevation: [670.5] }),
+    });
+    const elev = await resolveGroundElevation(null, 47.4245, 9.3765);
+    assert.equal(elev, 670.5);
+  } finally {
+    globalThis.fetch = priorFetch;
+  }
 });

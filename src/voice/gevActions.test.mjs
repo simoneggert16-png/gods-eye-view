@@ -3943,6 +3943,70 @@ test('search_and_forecast_asset retrieves asset deep dive and generates in-depth
   assert.ok(res.sitrepDe.includes('Zielkorridor'));
 });
 
+test('fly_to_location prioritizes named query search over guessed coordinates', async () => {
+  let searchCalledWith = null;
+  const mockViewer = {
+    clock: { onTick: { addEventListener: () => () => {} } },
+    camera: {
+      positionWC: Cesium.Cartesian3.fromDegrees(0, 0, 1000),
+      moveEnd: { addEventListener: () => () => {} },
+      flyTo() {},
+      flyToBoundingSphere() {},
+      lookAt() {},
+      lookAtTransform() {},
+    },
+    scene: {
+      globe: null,
+      canvas: {
+        clientWidth: 800,
+        clientHeight: 600,
+        addEventListener() {},
+        removeEventListener() {},
+      },
+    },
+  };
+  const runner = createGevActionRunner({
+    viewer: mockViewer,
+    styleManager: {},
+    dataManager: { layers: new Map(), getAll: () => [] },
+  });
+
+  const priorFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url) => {
+      if (typeof url === 'string' && url.includes('/api/geocode')) {
+        searchCalledWith = url;
+        return {
+          ok: true,
+          json: async () => ({
+            found: true,
+            lat: 47.4307,
+            lon: 9.3873,
+            label: 'Kantonsspital St. Gallen, Rorschacher Strasse, St. Gallen, Schweiz',
+            addressType: 'hospital',
+            placeClass: 'amenity',
+            bbox: [47.428, 47.433, 9.384, 9.390],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    };
+
+    const res = await runner('fly_to_location', {
+      query: 'Kantonsspital St. Gallen',
+      latitude: 47.4245,
+      longitude: 9.3765,
+    });
+    assert.equal(res.ok, true);
+    assert.ok(res.label.includes('Kantonsspital St. Gallen'));
+    assert.equal(res.latitude, 47.4307);
+    assert.equal(res.longitude, 9.3873);
+    assert.ok(searchCalledWith !== null, 'searchAndFlyTo should be called for named query');
+  } finally {
+    globalThis.fetch = priorFetch;
+  }
+});
+
 
 
 

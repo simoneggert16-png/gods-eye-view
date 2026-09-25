@@ -1,5 +1,5 @@
 import * as Cesium from 'cesium';
-import { CITY_POIS, findPoiByName, flyToGlobeView, flyToLandmark, flyToPOI, flyToPresetLocation, GLOBE_VIEW, searchAndFlyTo } from '../locations.js';
+import { CITY_POIS, findPoiByName, flyToGlobeView, flyToLandmark, flyToPOI, flyToPresetLocation, GLOBE_VIEW, searchAndFlyTo, resolveGroundElevation } from '../locations.js';
 import {
   getContextStore,
   getSelectedEntityContext,
@@ -3212,41 +3212,14 @@ async function flyToRequestedLocation(viewer, args, {
   }
 
   const queryCoords = parseLatLonQuery(args.query);
-  const latitude = queryCoords?.latitude ?? Number(args.latitude);
-  const longitude = queryCoords?.longitude ?? Number(args.longitude);
-  if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
-    const defaultRange = args.viewMode === 'close' ? 2500 : (args.viewMode === 'overview' ? 35000 : 12000);
-    const resolvedRange = rangeM || defaultRange;
-    const resolvedPitch = Number.isFinite(Number(args.pitch)) ? Number(args.pitch) : -35;
-    const resolvedHeading = Number.isFinite(Number(args.heading)) ? Number(args.heading) : 0;
-    const result = immediate(() => flyToLandmark(viewer, latitude, longitude, {
-      range: resolvedRange,
-      pitch: resolvedPitch,
-      heading: resolvedHeading,
-      buildingHeight: 0,
-      duration: 2.2,
-      onStart: immediateOnStart,
-      ...arrivalHooks,
-    }));
-    if (result === false) return cancelled(`${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
-    const response = {
-      ok: true,
-      action: 'fly_to_location',
-      latitude,
-      longitude,
-      label: `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`,
-      rangeM: Math.round(resolvedRange),
-      navigationMode: rangeM ? 'explicit-range' : (args.viewMode === 'close' ? 'close-coordinate' : 'coordinate-overview'),
-    };
-    return afterArrival(response, response.label);
-  }
+  const rawQuery = String(args.query || '').trim();
+  const hasNamedQuery = rawQuery.length > 0 && !queryCoords;
 
-  const query = String(args.query || '').trim();
-  if (query) {
+  if (hasNamedQuery) {
     // A query that names a curated preset POI ("the Texas State Capitol", "Golden Gate Bridge")
     // flies to its hand-tuned camera pose — the same beautiful framing as clicking the LOCATIONS
     // panel button — instead of generic geocode framing. An explicit rangeM still overrides distance.
-    const poiMatch = findPoiByName(query);
+    const poiMatch = findPoiByName(rawQuery);
     if (poiMatch) {
       const result = immediate(() => flyToPOI(viewer, poiMatch.cityId, poiMatch.index, {
         duration: 2.2,
@@ -3255,12 +3228,12 @@ async function flyToRequestedLocation(viewer, args, {
         ...(rangeM ? { range: rangeM } : {}),
       }));
       const poi = CITY_POIS[poiMatch.cityId]?.pois?.[poiMatch.index];
-      if (result === false) return cancelled(poi?.name || query);
+      if (result === false) return cancelled(poi?.name || rawQuery);
       const response = {
         ok: Boolean(result),
         action: 'fly_to_location',
-        query,
-        label: poi?.name || query,
+        query: rawQuery,
+        label: poi?.name || rawQuery,
         navigationMode: rangeM ? 'preset-poi-range' : 'preset-poi',
         rangeM: result?.range ? Math.round(result.range) : (rangeM || null),
       };
@@ -3268,9 +3241,9 @@ async function flyToRequestedLocation(viewer, args, {
     }
 
     const generation = typeof beginDeferred === 'function' ? beginDeferred() : null;
-    if (generation === false) return cancelled(query);
+    if (generation === false) return cancelled(rawQuery);
     const managedDeferred = typeof reassertDeferred === 'function';
-    const destination = await searchAndFlyTo(viewer, query, {
+    const destination = await searchAndFlyTo(viewer, rawQuery, {
       ...(rangeM ? { range: rangeM } : {}),
       ...(Number.isFinite(Number(args.pitch)) ? { pitch: Number(args.pitch) } : {}),
       ...(Number.isFinite(Number(args.heading)) ? { heading: Number(args.heading) } : {}),
@@ -3283,27 +3256,62 @@ async function flyToRequestedLocation(viewer, args, {
       beforeFly: managedDeferred ? () => reassertDeferred(generation) : null,
       onStart: managedDeferred ? null : onStart,
     });
-    if (destination?.cancelled) return cancelled(query);
-    if (!destination) {
-      return {
-        ok: false,
+    if (destination?.cancelled) return cancelled(rawQuery);
+    if (destination) {
+      const response = {
+        ok: true,
         action: 'fly_to_location',
-        query,
-        label: query,
-        error: `Place "${query}" not found — try a different spelling or a nearby bigger place`,
+        query: rawQuery,
+        label: destination?.label || rawQuery,
+        latitude: destination?.latitude ?? null,
+        longitude: destination?.longitude ?? null,
+        navigationMode: destination?.navigationMode || null,
+        rangeM: destination?.rangeM || rangeM || null,
       };
+      return afterArrival(response, response.label);
     }
+  }
+
+  // Fall back to explicit coordinates or coordinate string
+  const latitude = queryCoords?.latitude ?? Number(args.latitude);
+  const longitude = queryCoords?.longitude ?? Number(args.longitude);
+  if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+    const defaultRange = args.viewMode === 'close' ? 2500 : (args.viewMode === 'overview' ? 35000 : 12000);
+    const resolvedRange = rangeM || defaultRange;
+    const resolvedPitch = Number.isFinite(Number(args.pitch)) ? Number(args.pitch) : -35;
+    const resolvedHeading = Number.isFinite(Number(args.heading)) ? Number(args.heading) : 0;
+    const groundElevation = await resolveGroundElevation(viewer, latitude, longitude);
+    const result = immediate(() => flyToLandmark(viewer, latitude, longitude, {
+      range: resolvedRange,
+      pitch: resolvedPitch,
+      heading: resolvedHeading,
+      buildingHeight: 0,
+      groundElevation,
+      duration: 2.2,
+      onStart: immediateOnStart,
+      ...arrivalHooks,
+    }));
+    if (result === false) return cancelled(`${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
     const response = {
       ok: true,
       action: 'fly_to_location',
-      query,
-      label: destination?.label || query,
-      latitude: destination?.latitude ?? null,
-      longitude: destination?.longitude ?? null,
-      navigationMode: destination?.navigationMode || null,
-      rangeM: destination?.rangeM || rangeM || null,
+      latitude,
+      longitude,
+      label: rawQuery || `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`,
+      rangeM: Math.round(resolvedRange),
+      navigationMode: rangeM ? 'explicit-range' : (args.viewMode === 'close' ? 'close-coordinate' : 'coordinate-overview'),
     };
     return afterArrival(response, response.label);
+  }
+
+  if (hasNamedQuery) {
+    return {
+      ok: false,
+      action: 'fly_to_location',
+      query: rawQuery,
+      label: rawQuery,
+      error: `Place "${rawQuery}" not found — try a different spelling or a nearby bigger place`,
+    };
   }
 
   throw new Error('fly_to_location needs a locationId, query, or latitude/longitude');

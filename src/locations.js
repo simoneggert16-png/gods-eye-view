@@ -187,12 +187,72 @@ export const LOCATIONS = Object.entries(CITY_POIS).map(([id, city]) => ({
  * @param {number} options.buildingHeight - Estimated landmark center height above ground (default 30)
  * @param {number} options.groundElevation - Fallback ground elevation when terrain isn't loaded (default 0)
  * @param {number} options.duration - Flight duration in seconds (default 3.0)
+ */
+const _elevationCache = new Map();
+
+/**
+ * Resolve real-world ground/terrain elevation (meters above WGS84 ellipsoid).
+ * Uses globe height, 3D tiles clampToHeight, or fast Open-Meteo elevation API fallback.
+ */
+export async function resolveGroundElevation(viewer, lat, lon) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return 0;
+  // 1. Globe height if available
+  try {
+    const carto = Cesium.Cartographic.fromDegrees(lon, lat);
+    const globeH = viewer?.scene?.globe?.getHeight?.(carto);
+    if (Number.isFinite(globeH) && globeH > 0) return globeH;
+  } catch {}
+
+  // 2. 3D tiles clamp if loaded
+  try {
+    const scene = viewer?.scene;
+    if (scene?.clampToHeightSupported && typeof scene.clampToHeight === 'function') {
+      const surface = Cesium.Cartesian3.fromDegrees(lon, lat, 0);
+      const clamped = scene.clampToHeight(surface);
+      if (clamped) {
+        const h = Cesium.Cartographic.fromCartesian(clamped).height;
+        if (Number.isFinite(h) && h > -400 && h < 9000) return h;
+      }
+    }
+  } catch {}
+
+  // 3. Fast keyless Open-Meteo elevation API fallback (cached in memory)
+  const key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
+  if (_elevationCache.has(key)) return _elevationCache.get(key);
+  try {
+    const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), 1800) : null;
+    const res = await fetch(
+      `https://api.open-meteo.com/v1/elevation?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}`,
+      ctrl ? { signal: ctrl.signal } : {}
+    );
+    if (timer) clearTimeout(timer);
+    if (res.ok) {
+      const data = await res.json();
+      const elev = Number(data?.elevation?.[0]);
+      if (Number.isFinite(elev)) {
+        _elevationCache.set(key, elev);
+        return elev;
+      }
+    }
+  } catch {}
+
+  return 0;
+}
+
+/**
+ * Fly the camera to frame a specific landmark or building with a cinematic pitch and range.
+ *
+ * @param {Cesium.Viewer} viewer
+ * @param {number} lat Latitude in degrees
+ * @param {number} lon Longitude in degrees
+ * @param {object} [options]
  * @returns {{ targetPosition: Cesium.Cartesian3 }} The computed target for orbit use
  */
 export function flyToLandmark(viewer, lat, lon, options = {}) {
   const {
-    range = 500,
-    pitch = -30,
+    range = 850,
+    pitch = -35,
     heading = 0,
     buildingHeight = 30,
     groundElevation = 0,
@@ -205,10 +265,21 @@ export function flyToLandmark(viewer, lat, lon, options = {}) {
 
   // Sample terrain height (sync — uses loaded tiles; 0 if globe/terrain not ready)
   const targetCartographic = Cesium.Cartographic.fromDegrees(lon, lat);
-  const sampledHeight = viewer.scene.globe?.getHeight(targetCartographic);
+  let sampledHeight = viewer.scene.globe?.getHeight(targetCartographic);
 
-  // Use sampled height if available, otherwise fall back to pre-baked city ground elevation.
-  // Google 3D Tiles don't populate globe terrain, so first fly-to always gets the fallback.
+  // If globe height not available, check 3D tiles clampToHeight
+  if (sampledHeight == null || sampledHeight <= 0) {
+    try {
+      if (viewer.scene.clampToHeightSupported && typeof viewer.scene.clampToHeight === 'function') {
+        const c = viewer.scene.clampToHeight(Cesium.Cartesian3.fromDegrees(lon, lat, 0));
+        if (c) {
+          const h = Cesium.Cartographic.fromCartesian(c).height;
+          if (Number.isFinite(h) && h > -400 && h < 9000) sampledHeight = h;
+        }
+      }
+    } catch {}
+  }
+
   const terrainHeight = (sampledHeight != null && sampledHeight > 0) ? sampledHeight : groundElevation;
 
   const bounds = normalizeBuildingBounds(buildingBounds);
@@ -216,8 +287,8 @@ export function flyToLandmark(viewer, lat, lon, options = {}) {
   const targetPosition = Cesium.Cartesian3.fromDegrees(lon, lat, targetHeight);
   const boundingRadius = bounds ? buildingBoundingRadius(bounds) : 0;
   const framingRange = bounds
-    ? Math.max(rangeForBoundingSphere(viewer, boundingRadius), boundingRadius * 1.35)
-    : range;
+    ? Math.max(rangeForBoundingSphere(viewer, boundingRadius), boundingRadius * 1.5, 750)
+    : Math.max(range, 750);
 
   const hpr = new Cesium.HeadingPitchRange(
     Cesium.Math.toRadians(heading),
@@ -409,6 +480,7 @@ export function nominatimResultToGeocode(row) {
   else if (cls === 'aeroway') types = ['airport'];
   else if (kind === 'stadium') types = ['stadium'];
   else if (kind === 'university' || kind === 'college') types = ['university'];
+  else if (kind === 'hospital' || kind === 'clinic' || cls === 'healthcare') types = ['hospital'];
   else types = [];
   let viewport = null;
   const bbox = Array.isArray(row?.bbox) ? row.bbox.map(Number) : [];
@@ -579,11 +651,13 @@ export async function searchAndFlyTo(viewer, query, options = {}) {
     const swath = navigationMode === 'area-overview' ? regionFramingPlan(viewport) : null;
     if (swath?.mode === 'swath') {
       if (!mayFly()) return CANCELLED_SEARCH;
+      const groundElevation = await resolveGroundElevation(viewer, swath.centerLat, swath.centerLng);
       flyToLandmark(viewer, swath.centerLat, swath.centerLng, {
         range: swath.rangeM,
         pitch: swath.pitchDeg,
         heading: swath.headingDeg,
         buildingHeight: 0,
+        groundElevation,
         duration,
         onStart: options.onStart,
         onComplete: options.onComplete,
@@ -591,6 +665,8 @@ export async function searchAndFlyTo(viewer, query, options = {}) {
       });
       return {
         label,
+        latitude: swath.centerLat,
+        longitude: swath.centerLng,
         navigationMode: 'natural-region-swath',
         rangeM: swath.rangeM,
       };
@@ -624,6 +700,8 @@ export async function searchAndFlyTo(viewer, query, options = {}) {
     if (flight) {
       return {
         label,
+        latitude: lat,
+        longitude: lng,
         navigationMode,
         rangeM: null,
       };
@@ -635,13 +713,17 @@ export async function searchAndFlyTo(viewer, query, options = {}) {
     ? await resolveBuildingBounds(lat, lng, query)
     : null;
   const range = requestedRange || defaultRangeForNavigationMode(navigationMode);
+  const targetLat = buildingBounds?.lat ?? lat;
+  const targetLon = buildingBounds?.lon ?? lng;
+  const groundElevation = await resolveGroundElevation(viewer, targetLat, targetLon);
   if (!mayFly()) return CANCELLED_SEARCH;
-  const flight = flyToLandmark(viewer, buildingBounds?.lat ?? lat, buildingBounds?.lon ?? lng, {
+  const flight = flyToLandmark(viewer, targetLat, targetLon, {
     range,
     pitch: Number.isFinite(options.pitch) ? options.pitch : buildingPitch(buildingBounds),
     heading: Number.isFinite(options.heading) ? options.heading : 30,
     buildingHeight: 30,
     buildingBounds,
+    groundElevation,
     duration,
     onStart: options.onStart,
     onComplete: options.onComplete,
@@ -707,6 +789,17 @@ export function geocodeNavigationMode(types) {
     || values.has('zoo')
     || values.has('cemetery')
     || values.has('shopping_mall')
+    || values.has('hospital')
+    || values.has('clinic')
+    || values.has('healthcare')
+    || values.has('health')
+    || values.has('school')
+    || values.has('college')
+    || values.has('place_of_worship')
+    || values.has('church')
+    || values.has('cathedral')
+    || values.has('museum')
+    || values.has('attraction')
   ) {
     return 'area-overview';
   }
@@ -915,7 +1008,7 @@ function defaultRangeForNavigationMode(mode) {
   if (mode === 'neighborhood-close') return 4500;
   if (mode === 'area-overview') return 1400;
   if (mode === 'street-corridor') return 900;
-  return 250;
+  return 850;
 }
 
 function shouldFrameGeocodeViewport(mode) {
@@ -1036,12 +1129,16 @@ async function resolveBuildingBounds(lat, lon, query) {
   const overpassQuery = `
     [out:json][timeout:10];
     (
-      way(around:180,${lat},${lon})["building"];
-      relation(around:180,${lat},${lon})["building"];
-      way(around:180,${lat},${lon})["man_made"];
-      relation(around:180,${lat},${lon})["man_made"];
-      way(around:180,${lat},${lon})["tourism"="attraction"];
-      relation(around:180,${lat},${lon})["tourism"="attraction"];
+      way(around:300,${lat},${lon})["building"];
+      relation(around:300,${lat},${lon})["building"];
+      way(around:300,${lat},${lon})["amenity"];
+      relation(around:300,${lat},${lon})["amenity"];
+      way(around:300,${lat},${lon})["healthcare"];
+      relation(around:300,${lat},${lon})["healthcare"];
+      way(around:300,${lat},${lon})["man_made"];
+      relation(around:300,${lat},${lon})["man_made"];
+      way(around:300,${lat},${lon})["tourism"="attraction"];
+      relation(around:300,${lat},${lon})["tourism"="attraction"];
     );
     out tags center geom;
   `;
