@@ -17,6 +17,7 @@ import {
   selectFootprint,
   refineScope,
   isGroundsLikeAsk,
+  isDeicticAsk,
 } from './annotationResolver.js';
 
 // Build a square way of ~`areaM2` centred `dLatM`/`dLonM` metres from an anchor,
@@ -491,5 +492,16 @@ test('curated landmarks bypass near-view proximity gate even when camera is far'
   assert.ok(resolvedHelipad, 'White House Helipad landmark bypasses near-view proximity gate');
   assert.equal(resolvedHelipad.source, 'geocode');
   assert.deepEqual([resolvedHelipad.lat, resolvedHelipad.lon], [38.8967, -77.0365]);
+});
+
+test('isDeicticAsk identifies pronouns and screen-relative terms', () => {
+  assert.equal(isDeicticAsk('es'), true);
+  assert.equal(isDeicticAsk('das'), true);
+  assert.equal(isDeicticAsk('hier'), true);
+  assert.equal(isDeicticAsk('dieses gebäude'), true);
+  assert.equal(isDeicticAsk('it'), true);
+  assert.equal(isDeicticAsk('this'), true);
+  assert.equal(isDeicticAsk('Kantonsspital Zürich'), false);
+  assert.equal(isDeicticAsk('Eiffelturm'), false);
 });
 

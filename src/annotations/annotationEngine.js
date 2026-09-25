@@ -855,13 +855,26 @@ export function createAnnotationEngine({
       const target = anno.to
         ? { lon: (anno.anchor.lon + anno.to.lon) / 2, lat: (anno.anchor.lat + anno.to.lat) / 2 }
         : anno.anchor;
+      // If the target is ALREADY visible in the user's viewport on screen,
+      // do NOT refly the camera and jar or displace the user's view!
+      if (isPointOnScreen(target)) {
+        return;
+      }
       // No ring yet (progressive outline still resolving) → size the flight from the
       // Places viewport box when we have one, so a big compound isn't framed at
       // building scale while its outline is traced. Never re-fly when the ring lands.
       const range = anno.ring ? ringRange(anno.ring) : (viewportRange(anno.viewport) || 600);
+      let targetHeight = anno.anchor.height || 0;
+      if (!targetHeight && viewer.scene) {
+        try {
+          const carto = Cesium.Cartographic.fromDegrees(target.lon, target.lat);
+          const gh = viewer.scene.globe?.getHeight?.(carto);
+          if (Number.isFinite(gh) && gh > 0) targetHeight = gh;
+        } catch {}
+      }
       viewer.camera.flyToBoundingSphere(
         new Cesium.BoundingSphere(
-          Cesium.Cartesian3.fromDegrees(target.lon, target.lat, anno.anchor.height || 0),
+          Cesium.Cartesian3.fromDegrees(target.lon, target.lat, targetHeight),
           range,
         ),
         {

@@ -122,11 +122,19 @@ export async function resolveAnnotationTarget({
     const query = String(target || '').trim();
     if (query) {
       const center = pickWorldFromScreen(viewer, 0.5, 0.5) || viewportProximity(viewer);
+      // Deictic asks ("es", "das", "hier", "dieses", "this", "it", "here") refer directly to the center of view:
+      if (center && isDeicticAsk(query)) {
+        lat = center.lat;
+        lon = center.lon;
+        label = labelHint || 'Markierung';
+        source = 'deictic';
+        trace.places = 'deictic-center';
+      }
       // Monument / grounds names scatter under Geocoding — try a view-biased Places Text Search FIRST.
       // A hit near the view centre is trusted (skips the proximity gate, like the osm-local snap); on a
       // miss we fall through to geocode + fetchLocalMonument below. The model's entityKind counts too:
       // a point_feature by fact ("Heroes of the Alamo" — no monument word) deserves the same path.
-      if (center && (isMonumentLikeQuery(query) || isGroundsLikeQuery(query) || entityKind === 'point_feature')) {
+      if (source !== 'deictic' && center && (isMonumentLikeQuery(query) || isGroundsLikeQuery(query) || entityKind === 'point_feature')) {
         const placeHit = await placesTextSearch(query, center.lat, center.lon, 6000, signal);
         if (placeHit) {
           trace.places = `${placeHit.lat.toFixed(5)},${placeHit.lon.toFixed(5)}`;
@@ -143,7 +151,7 @@ export async function resolveAnnotationTarget({
           trace.places = 'miss';
         }
       }
-      if (source !== 'places') {
+      if (source !== 'places' && source !== 'deictic') {
         const geocoded = await geocodePlace(query, viewportBias(viewer), signal);
         if (geocoded) {
           lat = geocoded.lat;
@@ -1602,6 +1610,12 @@ function isMonumentLikeQuery(query) {
  *  polygon, instead of failing outright. */
 function isGroundsLikeQuery(query) {
   return /\b(grounds|compound|campus|complex|quad|plaza)\b/i.test(String(query || ''));
+}
+
+/** Check if target is a deictic reference ("es", "das", "hier", "this", "it", etc.). */
+export function isDeicticAsk(query) {
+  const q = String(query || '').trim().toLowerCase();
+  return /^(?:es|das|hier|dieses|diese|dies|it|this|that|here|current|current location|dieses geb[aä]ude|das geb[aä]ude|den ort|die stelle)$/i.test(q);
 }
 
 /**

@@ -31,6 +31,12 @@ test('german and english building names resolve worldwide', () => {
   assert.deepEqual(findWorldLandmark('Opernhaus Sydney') || findWorldLandmark('Sydney Oper'), { name: 'Sydney Opera House', lat: -33.8568, lon: 151.2153, kind: 'building' });
   assert.deepEqual(findWorldLandmark('Petra')?.name, 'Petra, Jordan');
   assert.deepEqual(findWorldLandmark('Pyramiden von Gizeh')?.name, 'Pyramids of Giza');
+  assert.equal(findWorldLandmark('Kantonsspital Zürich')?.name, 'Universitätsspital Zürich (USZ)');
+  assert.equal(findWorldLandmark('Universitätsspital Zürich')?.name, 'Universitätsspital Zürich (USZ)');
+  assert.equal(findWorldLandmark('USZ Zürich')?.name, 'Universitätsspital Zürich (USZ)');
+  assert.equal(findWorldLandmark('Kantonsspital St. Gallen')?.name, 'Kantonsspital St. Gallen (KSSG)');
+  assert.equal(findWorldLandmark('KSH St.Gallen')?.name, 'Kantonsspital St. Gallen (KSSG)');
+  assert.equal(findWorldLandmark('ETH Zürich')?.name, 'ETH Zürich (Hauptgebäude & Polyterrasse)');
 });
 
 test('containment matches inside longer phrases', () => {

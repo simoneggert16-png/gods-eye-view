@@ -3980,12 +3980,12 @@ test('fly_to_location prioritizes named query search over guessed coordinates', 
           ok: true,
           json: async () => ({
             found: true,
-            lat: 47.4307,
-            lon: 9.3873,
-            label: 'Kantonsspital St. Gallen, Rorschacher Strasse, St. Gallen, Schweiz',
+            lat: 47.2088,
+            lon: 7.5322,
+            label: 'Bürgerspital Solothurn, Schöngrünstrasse, Solothurn, Schweiz',
             addressType: 'hospital',
             placeClass: 'amenity',
-            bbox: [47.428, 47.433, 9.384, 9.390],
+            bbox: [47.205, 47.212, 7.528, 7.536],
           }),
         };
       }
@@ -3993,14 +3993,14 @@ test('fly_to_location prioritizes named query search over guessed coordinates', 
     };
 
     const res = await runner('fly_to_location', {
-      query: 'Kantonsspital St. Gallen',
-      latitude: 47.4245,
-      longitude: 9.3765,
+      query: 'Bürgerspital Solothurn',
+      latitude: 47.2000,
+      longitude: 7.5000,
     });
     assert.equal(res.ok, true);
-    assert.ok(res.label.includes('Kantonsspital St. Gallen'));
-    assert.equal(res.latitude, 47.4307);
-    assert.equal(res.longitude, 9.3873);
+    assert.ok(res.label.includes('Bürgerspital Solothurn'));
+    assert.equal(res.latitude, 47.2088);
+    assert.equal(res.longitude, 7.5322);
     assert.ok(searchCalledWith !== null, 'searchAndFlyTo should be called for named query');
   } finally {
     globalThis.fetch = priorFetch;
