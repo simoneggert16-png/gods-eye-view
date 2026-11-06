@@ -39,120 +39,228 @@ export function showPinModal(onSuccess) {
       position: fixed;
       inset: 0;
       z-index: 999999;
-      background: rgba(10, 10, 15, 0.88);
-      backdrop-filter: blur(24px);
-      -webkit-backdrop-filter: blur(24px);
       display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: 20px;
-      font-family: var(--font-sans, -apple-system, sans-serif);
-      color: #e8eaed;
+      padding:
+        max(28px, env(safe-area-inset-top))
+        max(24px, env(safe-area-inset-right))
+        max(36px, env(safe-area-inset-bottom))
+        max(24px, env(safe-area-inset-left));
+      overflow: auto;
+      color-scheme: dark;
+      background-color: #07090c;
+      background-image: radial-gradient(ellipse 88% 64% at 50% 38%, #14181f 0%, #07090c 62%);
+      font-family: var(--font-sans, 'Inter', -apple-system, BlinkMacSystemFont, sans-serif);
+      color: #f3f5f7;
+      user-select: none;
       transition: opacity 0.4s ease;
     }
-    .pin-card {
-      background: rgba(18, 20, 32, 0.92);
-      border: 1px solid rgba(0, 212, 255, 0.3);
-      box-shadow: 0 0 40px rgba(0, 212, 255, 0.15), 0 20px 50px rgba(0, 0, 0, 0.8);
-      border-radius: 18px;
-      padding: 36px 28px;
-      max-width: 420px;
-      width: 100%;
-      text-align: center;
-      animation: pinCardEnter 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+    #pin-gate-modal::before {
+      content: '';
+      position: absolute;
+      inset: 16px;
+      border: 1px solid rgba(243, 245, 247, 0.1);
+      pointer-events: none;
     }
-    @keyframes pinCardEnter {
-      from { opacity: 0; transform: scale(0.94) translateY(10px); }
-      to { opacity: 1; transform: scale(1) translateY(0); }
+    .pin-meta {
+      position: absolute;
+      top: 30px;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      pointer-events: none;
+      animation: pinFade 0.4s ease;
     }
-    .pin-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 14px;
-      border-radius: 999px;
-      background: rgba(0, 212, 255, 0.12);
-      border: 1px solid rgba(0, 212, 255, 0.4);
-      color: #00d4ff;
-      font-family: var(--font-mono, monospace);
+    .pin-meta-left { left: 32px; text-align: left; }
+    .pin-meta-right { right: 32px; text-align: right; }
+    .pin-meta-label,
+    .pin-kicker,
+    .pin-tagline,
+    .pin-card h2,
+    .pin-box,
+    .pin-status,
+    .pin-pad-btn {
+      font-family: var(--font-mono, 'JetBrains Mono', 'SF Mono', monospace);
+    }
+    .pin-meta-label,
+    .pin-kicker,
+    .pin-tagline {
       font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      margin-bottom: 18px;
+      font-weight: 500;
+      letter-spacing: 0.28em;
       text-transform: uppercase;
+      color: #a8b0b8;
+    }
+    .pin-meta-value {
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: #f3f5f7;
+    }
+    .pin-card {
+      position: relative;
+      z-index: 1;
+      width: min(100%, 440px);
+      margin: auto;
+      padding: 8px 8px 0;
+      text-align: center;
+      animation: pinFade 0.4s ease;
+    }
+    @keyframes pinFade {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    .pin-logo {
+      display: block;
+      width: 84px;
+      height: auto;
+      margin: 0 auto 20px;
+    }
+    .pin-kicker {
+      margin: 0 0 14px;
+      color: #c5cad0;
     }
     .pin-card h2 {
-      font-size: 20px;
-      font-weight: 700;
-      letter-spacing: 0.05em;
-      margin-bottom: 8px;
+      margin: 0;
+      font-size: clamp(18px, 2.2vw, 26px);
+      font-weight: 500;
+      letter-spacing: 0.2em;
+      line-height: 1.15;
+      color: #f7f8f8;
+      white-space: nowrap;
     }
-    .pin-card p {
-      font-size: 13px;
-      color: rgba(232, 234, 237, 0.6);
-      line-height: 1.45;
-      margin-bottom: 24px;
+    .pin-title-accent {
+      color: #00d4ff;
+      font-weight: 400;
+    }
+    .pin-tagline {
+      margin: 12px 0 0;
+      letter-spacing: 0.34em;
+      color: #c2c8ce;
+    }
+    .pin-rule {
+      width: 36px;
+      height: 1px;
+      margin: 26px auto 22px;
+      background: rgba(243, 245, 247, 0.42);
+    }
+    .pin-lead {
+      max-width: 36ch;
+      margin: 0 auto 30px;
+      font-size: 15px;
+      font-weight: 400;
+      line-height: 1.55;
+      letter-spacing: 0.005em;
+      color: #c8ced4;
+    }
+    .pin-lead span {
+      display: block;
+      margin-bottom: 6px;
+      color: #f3f5f7;
+      font-weight: 500;
+    }
+    .pin-entry {
+      width: min(100%, 336px);
+      margin: 0 auto;
     }
     .pin-row {
       display: flex;
-      justify-content: center;
-      gap: 10px;
-      margin-bottom: 16px;
+      gap: 8px;
+      margin: 0 0 12px;
     }
     .pin-box {
-      width: 44px;
-      height: 54px;
-      background: rgba(8, 10, 18, 0.8);
-      border: 2px solid rgba(255, 255, 255, 0.12);
-      border-radius: 10px;
-      font-family: var(--font-mono, monospace);
-      font-size: 24px;
-      font-weight: 700;
-      color: #00d4ff;
+      flex: 1 1 0;
+      min-width: 0;
+      width: auto;
+      height: 60px;
+      padding: 0;
+      border: 1px solid rgba(243, 245, 247, 0.4);
+      border-radius: 0;
+      background: #10141a;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      color: #f7f8f8;
+      font-size: 22px;
+      font-weight: 500;
+      line-height: 60px;
       text-align: center;
+      caret-color: #f7f8f8;
       outline: none;
-      transition: all 0.2s ease;
+      -webkit-appearance: none;
+      appearance: none;
+      transition: border-color 0.15s ease, background-color 0.15s ease;
+    }
+    .pin-box::placeholder {
+      color: transparent;
+      opacity: 0;
+    }
+    .pin-box:nth-child(3) {
+      margin-right: 8px;
+    }
+    .pin-box:not(:placeholder-shown) {
+      border-color: rgba(243, 245, 247, 0.55);
+      background: rgba(255, 255, 255, 0.025);
     }
     .pin-box:focus {
-      border-color: #00d4ff;
-      box-shadow: 0 0 16px rgba(0, 212, 255, 0.5);
-      background: rgba(12, 16, 28, 0.95);
+      border-color: #f7f8f8;
+      background: rgba(255, 255, 255, 0.035);
+      box-shadow: none;
+    }
+    .pin-box::-ms-reveal,
+    .pin-box::-ms-clear {
+      display: none;
     }
     .pin-status {
-      min-height: 20px;
+      width: min(100%, 460px);
+      min-height: 22px;
+      margin: 2px auto 18px;
       font-size: 12px;
+      font-weight: 500;
+      letter-spacing: 0.01em;
+      line-height: 1.45;
+      text-align: center;
       color: #ff4d4d;
-      font-family: var(--font-mono, monospace);
-      margin-bottom: 20px;
     }
     .pin-pad {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      gap: 10px;
-      max-width: 270px;
-      margin: 0 auto;
+      gap: 1px;
+      background: rgba(243, 245, 247, 0.14);
+      border: 1px solid rgba(243, 245, 247, 0.14);
     }
     .pin-pad-btn {
-      background: rgba(255, 255, 255, 0.04);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 10px;
-      color: #e8eaed;
-      font-family: var(--font-mono, monospace);
-      font-size: 20px;
-      font-weight: 600;
-      padding: 14px;
+      height: 54px;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: #0c0f13;
+      color: #f3f5f7;
+      font-size: 18px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
       cursor: pointer;
-      user-select: none;
-      transition: all 0.15s ease;
+      -webkit-tap-highlight-color: transparent;
+      transition: background-color 0.12s ease, color 0.12s ease;
+    }
+    .pin-pad-btn[data-key="C"],
+    .pin-pad-btn[data-key="DEL"] {
+      color: #d5dae0;
+      font-size: 13px;
+      letter-spacing: 0.12em;
     }
     .pin-pad-btn:hover {
-      background: rgba(0, 212, 255, 0.12);
-      border-color: rgba(0, 212, 255, 0.3);
+      background: #171c22;
+    }
+    .pin-pad-btn:focus-visible {
+      outline: 1px solid #f3f5f7;
+      outline-offset: -1px;
     }
     .pin-pad-btn:active {
-      transform: scale(0.95);
-      background: #00d4ff;
-      color: #0a0a0f;
+      background: #f3f5f7;
+      color: #07090c;
     }
     .pin-shake {
       animation: pinShake 0.4s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
@@ -163,43 +271,76 @@ export function showPinModal(onSuccess) {
       30%, 50%, 70% { transform: translate3d(-5px, 0, 0); }
       40%, 60% { transform: translate3d(5px, 0, 0); }
     }
+    @media (max-width: 720px), (max-height: 760px) {
+      .pin-meta { display: none; }
+      #pin-gate-modal::before { inset: 10px; }
+    }
+    @media (max-width: 420px) {
+      .pin-card h2 { letter-spacing: 0.12em; }
+      .pin-tagline { letter-spacing: 0.22em; }
+      .pin-lead { font-size: 14px; margin-bottom: 22px; }
+      .pin-box { height: 52px; font-size: 18px; line-height: 52px; }
+      .pin-pad-btn { height: 48px; }
+      .pin-logo { width: 68px; margin-bottom: 14px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .pin-card,
+      .pin-meta { animation: none; }
+    }
   `;
   document.head.appendChild(style);
 
   const modal = document.createElement('div');
   modal.id = 'pin-gate-modal';
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-labelledby', 'pin-gate-title');
   modal.innerHTML = `
+    <div class="pin-meta pin-meta-left" aria-hidden="true">
+      <span class="pin-meta-label">Console</span>
+      <span class="pin-meta-value">God's Eye</span>
+    </div>
+    <div class="pin-meta pin-meta-right" aria-hidden="true">
+      <span class="pin-meta-label">Status</span>
+      <span class="pin-meta-value">Required</span>
+    </div>
     <div class="pin-card" id="pin-card-inner">
-      <div class="pin-badge">
-        <span>🔒</span> SECURITY CLEARANCE
+      <img class="pin-logo" src="/logo.svg" alt="" width="84" height="56" />
+      <p class="pin-kicker">Security clearance</p>
+      <h2 id="pin-gate-title">GOD'S EYE <span class="pin-title-accent">VIEW</span></h2>
+      <p class="pin-tagline">No place left behind</p>
+      <div class="pin-rule" role="presentation"></div>
+      <p class="pin-lead"><span>Zugangsbeschränkung aktiv.</span> Bitte 6-stelligen Sicherheitscode eingeben, um die Konsole und Satelliten-Feeds zu starten.</p>
+
+      <div class="pin-entry">
+        <div class="pin-row" id="pin-input-row">
+          <input type="password" maxlength="1" class="pin-box" inputmode="numeric" pattern="[0-9]*" aria-label="Ziffer 1" placeholder=" " autofocus>
+          <input type="password" maxlength="1" class="pin-box" inputmode="numeric" pattern="[0-9]*" aria-label="Ziffer 2" placeholder=" ">
+          <input type="password" maxlength="1" class="pin-box" inputmode="numeric" pattern="[0-9]*" aria-label="Ziffer 3" placeholder=" ">
+          <input type="password" maxlength="1" class="pin-box" inputmode="numeric" pattern="[0-9]*" aria-label="Ziffer 4" placeholder=" ">
+          <input type="password" maxlength="1" class="pin-box" inputmode="numeric" pattern="[0-9]*" aria-label="Ziffer 5" placeholder=" ">
+          <input type="password" maxlength="1" class="pin-box" inputmode="numeric" pattern="[0-9]*" aria-label="Ziffer 6" placeholder=" ">
+        </div>
+
       </div>
-      <h2>GOD'S EYE VIEW</h2>
-      <p>Zugangsbeschränkung aktiv. Bitte 6-stelligen Sicherheitscode eingeben, um die Konsole und Satelliten-Feeds zu starten.</p>
 
-      <div class="pin-row" id="pin-input-row">
-        <input type="password" maxlength="1" class="pin-box" inputmode="numeric" pattern="[0-9]*" autofocus>
-        <input type="password" maxlength="1" class="pin-box" inputmode="numeric" pattern="[0-9]*">
-        <input type="password" maxlength="1" class="pin-box" inputmode="numeric" pattern="[0-9]*">
-        <input type="password" maxlength="1" class="pin-box" inputmode="numeric" pattern="[0-9]*">
-        <input type="password" maxlength="1" class="pin-box" inputmode="numeric" pattern="[0-9]*">
-        <input type="password" maxlength="1" class="pin-box" inputmode="numeric" pattern="[0-9]*">
-      </div>
+      <div class="pin-status" id="pin-status-msg" role="status" aria-live="polite"></div>
 
-      <div class="pin-status" id="pin-status-msg"></div>
-
-      <div class="pin-pad">
-        <button type="button" class="pin-pad-btn" data-key="1">1</button>
-        <button type="button" class="pin-pad-btn" data-key="2">2</button>
-        <button type="button" class="pin-pad-btn" data-key="3">3</button>
-        <button type="button" class="pin-pad-btn" data-key="4">4</button>
-        <button type="button" class="pin-pad-btn" data-key="5">5</button>
-        <button type="button" class="pin-pad-btn" data-key="6">6</button>
-        <button type="button" class="pin-pad-btn" data-key="7">7</button>
-        <button type="button" class="pin-pad-btn" data-key="8">8</button>
-        <button type="button" class="pin-pad-btn" data-key="9">9</button>
-        <button type="button" class="pin-pad-btn" data-key="C">C</button>
-        <button type="button" class="pin-pad-btn" data-key="0">0</button>
-        <button type="button" class="pin-pad-btn" data-key="DEL">⌫</button>
+      <div class="pin-entry">
+        <div class="pin-pad" role="group" aria-label="Ziffernblock">
+          <button type="button" class="pin-pad-btn" data-key="1">1</button>
+          <button type="button" class="pin-pad-btn" data-key="2">2</button>
+          <button type="button" class="pin-pad-btn" data-key="3">3</button>
+          <button type="button" class="pin-pad-btn" data-key="4">4</button>
+          <button type="button" class="pin-pad-btn" data-key="5">5</button>
+          <button type="button" class="pin-pad-btn" data-key="6">6</button>
+          <button type="button" class="pin-pad-btn" data-key="7">7</button>
+          <button type="button" class="pin-pad-btn" data-key="8">8</button>
+          <button type="button" class="pin-pad-btn" data-key="9">9</button>
+          <button type="button" class="pin-pad-btn" data-key="C">C</button>
+          <button type="button" class="pin-pad-btn" data-key="0">0</button>
+          <button type="button" class="pin-pad-btn" data-key="DEL">DEL</button>
+        </div>
       </div>
     </div>
   `;
