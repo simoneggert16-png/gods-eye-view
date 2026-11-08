@@ -1,0 +1,57 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "installCommand": "npm ci",
+  "env": {
+    "PUPPETEER_SKIP_DOWNLOAD": "1"
+  },
+  "functions": {
+    "api/[...path].js": {
+      "maxDuration": 60,
+      "includeFiles": "{config,node_modules/@meri-imperiumi/eccodes-wasm,node_modules/ws,node_modules/egm96-universal}/**"
+    },
+    "api/wall-shell.js": {
+      "includeFiles": "dist/index.html"
+    }
+  },
+  "routes": [
+    {
+      "src": "^/(.*)$",
+      "headers": {
+        "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-eval' blob: https://www.youtube.com https://connect.facebook.net https://platform.twitter.com https://maps.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' blob: data: https: wss: ws:; worker-src 'self' blob:; child-src 'self' blob:; frame-src 'self' blob: https://www.youtube-nocookie.com https://www.youtube.com https://www.facebook.com https://platform.twitter.com; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "strict-origin-when-cross-origin"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/api/wall$",
+      "dest": "/api/wall"
+    },
+    {
+      "src": "^/api/wall-shell$",
+      "dest": "/api/wall-shell"
+    },
+    {
+      "src": "^/api/(.+)$",
+      "dest": "/api/[...path]"
+    },
+    {
+      "src": "^/$",
+      "dest": "/api/wall-shell"
+    },
+    {
+      "src": "^/index\\.html$",
+      "dest": "/api/wall-shell"
+    },
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "^/(.*)$",
+      "dest": "/api/wall-shell"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+# Files excluded from the Vercel upload.
+#
+# A .vercelignore replaces .gitignore for upload purposes, so the entries that
+# keep credentials and build output out of the deployment are repeated here.
+# Nothing in this list is read by `vite build` or by the serverless bridge.
+
+# --- secrets and build output (mirrors .gitignore) ---
+.env
+.env.*
+!.env.example
+node_modules
+dist
+.gev-cache
+.gev-logs
+
+# --- not needed to build or run ---
+# 69 MB of markdown and media. Only *.test.mjs files read docs/CURRENT-STATE.md
+# and docs/KNOWN-ISSUES.md, and unit tests do not run during `vite build`.
+docs
+# Pinokio launcher. Referenced only by src/pinokio*.test.mjs.
+pinokio
+# Puppeteer/QA fixtures and recorded audio, used by `npm test` only.
+scripts/fixtures
+# Local desktop launchers and QA evidence.
+*.bat
+*.cmd
+qa-artifacts
+screenshots
+qa-shots
+.playwright-mcp
+.claude
+.gstack
